@@ -1,0 +1,35 @@
+[package]
+name = "trgt-denovo"
+version = "0.1.0"
+authors = ["Tom Mokveld", "Egor Dolzhenko"]
+description = """
+trgt-denovo is a CLI tool for targeted de novo tandem repeat calling from long-read HiFI sequencing data.
+"""
+edition = "2021"
+build = "build.rs"
+
+[build-dependencies]
+vergen = { version = "8.0.0", features = ["git", "gitcl"] }
+
+[[bin]]
+bench = false
+path = "src/main.rs"
+name = "trgt-denovo"
+
+[dependencies]
+serde = { version = "1.0.150", features = ["derive"] }
+wfa2-sys = { version = "*", git = "https://github.com/ctsa/rust-wfa2.git", rev = "6e1d1dd" }
+clap = { version = "4.0.18", features = ["suggestions", "derive"] }
+itertools = "*"
+log = "*"
+env_logger = "*"
+rand = "0.8.5"
+threadpool = "*"
+chrono = "*"
+csv = "*"
+ndarray = "*"
+# flate2 = { version = "1.0.20", default-features = false, features = ["zlib-ng"] }  # Options: zlib-ng, zlib, zlib-ng-compat
+noodles = { version = "*", features = ["vcf", "fasta", "core", "bam", "sam", "bgzf", "bed"] }
+once_cell = "*"
+rayon = "*"
+anyhow = "*"
