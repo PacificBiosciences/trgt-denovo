@@ -2,6 +2,8 @@ use crate::wfa2;
 use serde::{Deserialize, Serialize};
 use std::ptr;
 
+// TODO: Update functions using cigar.operations to use cigar_buffer instead.
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryModel {
     MemoryHigh,
@@ -183,6 +185,52 @@ impl WFAligner {
             inner: ptr::null_mut(),
         }
     }
+
+    /// Returns the penalties as a tuple based on the distance metric.
+    pub fn get_penalties(&self) -> (i32, i32, Option<i32>, Option<i32>, Option<i32>, Option<i32>) {
+        match DistanceMetric::from(self.attributes.inner.distance_metric) {
+            DistanceMetric::Edit => (
+                self.attributes.inner.linear_penalties.match_,
+                self.attributes.inner.linear_penalties.mismatch,
+                Some(self.attributes.inner.linear_penalties.indel),
+                None,
+                None,
+                None,
+            ),
+            DistanceMetric::Indel => (
+                self.attributes.inner.linear_penalties.match_,
+                self.attributes.inner.linear_penalties.mismatch,
+                Some(self.attributes.inner.linear_penalties.indel),
+                None,
+                None,
+                None,
+            ),
+            DistanceMetric::GapLinear => (
+                self.attributes.inner.linear_penalties.match_,
+                self.attributes.inner.linear_penalties.mismatch,
+                Some(self.attributes.inner.linear_penalties.indel),
+                None,
+                None,
+                None,
+            ),
+            DistanceMetric::GapAffine => (
+                self.attributes.inner.affine_penalties.match_,
+                self.attributes.inner.affine_penalties.mismatch,
+                Some(self.attributes.inner.affine_penalties.gap_opening),
+                Some(self.attributes.inner.affine_penalties.gap_extension),
+                None,
+                None,
+            ),
+            DistanceMetric::GapAffine2p => (
+                self.attributes.inner.affine2p_penalties.match_,
+                self.attributes.inner.affine2p_penalties.mismatch,
+                Some(self.attributes.inner.affine2p_penalties.gap_opening1),
+                Some(self.attributes.inner.affine2p_penalties.gap_extension1),
+                Some(self.attributes.inner.affine2p_penalties.gap_opening2),
+                Some(self.attributes.inner.affine2p_penalties.gap_extension2),
+            ),
+        }
+    }
 }
 
 impl Drop for WFAligner {
@@ -284,13 +332,15 @@ impl WFAligner {
         let mut last_op: Option<char> = None;
         for i in begin_offset..end_offset {
             let cur_op = operations[i as usize];
-            if last_op.is_some() && cur_op != last_op.unwrap() {
-                score -= Self::cigar_score_gap_affine2p_get_operations_score(
-                    last_op.unwrap(),
-                    op_length,
-                    &self.attributes.inner.affine2p_penalties,
-                );
-                op_length = 0;
+            if let Some(op) = last_op {
+                if cur_op != op {
+                    score -= Self::cigar_score_gap_affine2p_get_operations_score(
+                        op,
+                        op_length,
+                        &self.attributes.inner.affine2p_penalties,
+                    );
+                    op_length = 0;
+                }
             }
             last_op = Some(cur_op);
             op_length += 1;
@@ -355,6 +405,7 @@ impl WFAligner {
         let mut cstr = String::new();
 
         let cigar = unsafe { (*self.inner).cigar.as_ref() }.unwrap();
+
         let begin_offset = cigar.begin_offset as usize + offset;
         let end_offset = cigar.end_offset as usize - offset;
 
@@ -446,7 +497,6 @@ impl WFAligner {
         (pattern_alg, ops_alg, text_alg)
     }
 
-    // TODO: Update this and other functions using cigar.operations to use cigar_buffer instead.
     pub fn find_alignment_span(&self) -> ((usize, usize), (usize, usize)) {
         let mut pattern_start: usize = 0;
         let mut pattern_end: usize = 0;
@@ -546,7 +596,7 @@ impl WFAligner {
 pub struct WFAlignerIndel;
 
 impl WFAlignerIndel {
-    pub fn new(alignment_scope: AlignmentScope, memory_model: MemoryModel) -> WFAligner {
+    pub fn create_aligner(alignment_scope: AlignmentScope, memory_model: MemoryModel) -> WFAligner {
         let mut aligner = WFAligner::new(alignment_scope, memory_model);
         aligner.attributes = aligner.attributes.indel_penalties();
         unsafe {
@@ -560,7 +610,7 @@ impl WFAlignerIndel {
 pub struct WFAlignerEdit;
 
 impl WFAlignerEdit {
-    pub fn new(alignment_scope: AlignmentScope, memory_model: MemoryModel) -> WFAligner {
+    pub fn create_aligner(alignment_scope: AlignmentScope, memory_model: MemoryModel) -> WFAligner {
         let mut aligner = WFAligner::new(alignment_scope, memory_model);
         aligner.attributes = aligner.attributes.edit_penalties();
         unsafe {
@@ -574,7 +624,7 @@ impl WFAlignerEdit {
 pub struct WFAlignerGapLinear;
 
 impl WFAlignerGapLinear {
-    pub fn new_with_match(
+    pub fn create_aligner_with_match(
         match_: i32,
         mismatch: i32,
         indel: i32,
@@ -592,13 +642,13 @@ impl WFAlignerGapLinear {
         aligner
     }
 
-    pub fn new(
+    pub fn create_aligner(
         mismatch: i32,
         indel: i32,
         alignment_scope: AlignmentScope,
         memory_model: MemoryModel,
     ) -> WFAligner {
-        Self::new_with_match(0, mismatch, indel, alignment_scope, memory_model)
+        Self::create_aligner_with_match(0, mismatch, indel, alignment_scope, memory_model)
     }
 }
 
@@ -606,7 +656,7 @@ impl WFAlignerGapLinear {
 pub struct WFAlignerGapAffine;
 
 impl WFAlignerGapAffine {
-    pub fn new_with_match(
+    pub fn create_aligner_with_match(
         match_: i32,
         mismatch: i32,
         gap_opening: i32,
@@ -625,14 +675,14 @@ impl WFAlignerGapAffine {
         aligner
     }
 
-    pub fn new(
+    pub fn create_aligner(
         mismatch: i32,
         gap_opening: i32,
         gap_extension: i32,
         alignment_scope: AlignmentScope,
         memory_model: MemoryModel,
     ) -> WFAligner {
-        Self::new_with_match(
+        Self::create_aligner_with_match(
             0,
             mismatch,
             gap_opening,
@@ -647,7 +697,7 @@ impl WFAlignerGapAffine {
 pub struct WFAlignerGapAffine2Pieces;
 
 impl WFAlignerGapAffine2Pieces {
-    pub fn new_with_match(
+    pub fn create_aligner_with_match(
         match_: i32,
         mismatch: i32,
         gap_opening1: i32,
@@ -675,7 +725,7 @@ impl WFAlignerGapAffine2Pieces {
         aligner
     }
 
-    pub fn new(
+    pub fn create_aligner(
         mismatch: i32,
         gap_opening1: i32,
         gap_extension1: i32,
@@ -684,7 +734,7 @@ impl WFAlignerGapAffine2Pieces {
         alignment_scope: AlignmentScope,
         memory_model: MemoryModel,
     ) -> WFAligner {
-        Self::new_with_match(
+        Self::create_aligner_with_match(
             0,
             mismatch,
             gap_opening1,
@@ -706,7 +756,8 @@ mod tests {
 
     #[test]
     fn test_aligner_indel() {
-        let mut aligner = WFAlignerIndel::new(AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner =
+            WFAlignerIndel::create_aligner(AlignmentScope::Alignment, MemoryModel::MemoryHigh);
         let status = aligner.align_end_to_end(PATTERN, TEXT);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), 10);
@@ -720,7 +771,8 @@ mod tests {
 
     #[test]
     fn test_aligner_edit() {
-        let mut aligner = WFAlignerEdit::new(AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner =
+            WFAlignerEdit::create_aligner(AlignmentScope::Alignment, MemoryModel::MemoryHigh);
         let status = aligner.align_end_to_end(PATTERN, TEXT);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), 7);
@@ -734,8 +786,12 @@ mod tests {
 
     #[test]
     fn test_aligner_gap_linear() {
-        let mut aligner =
-            WFAlignerGapLinear::new(6, 2, AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner = WFAlignerGapLinear::create_aligner(
+            6,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryHigh,
+        );
         let status = aligner.align_end_to_end(PATTERN, TEXT);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -20);
@@ -749,8 +805,13 @@ mod tests {
 
     #[test]
     fn test_aligner_gap_affine() {
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Alignment, MemoryModel::MemoryLow);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryLow,
+        );
         let status = aligner.align_end_to_end(PATTERN, TEXT);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -40);
@@ -764,8 +825,13 @@ mod tests {
 
     #[test]
     fn test_aligner_score_only() {
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Score, MemoryModel::MemoryLow);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Score,
+            MemoryModel::MemoryLow,
+        );
         let status = aligner.align_end_to_end(PATTERN, TEXT);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -40);
@@ -776,7 +842,7 @@ mod tests {
 
     #[test]
     fn test_aligner_gap_affine_2pieces() {
-        let mut aligner = WFAlignerGapAffine2Pieces::new(
+        let mut aligner = WFAlignerGapAffine2Pieces::create_aligner(
             6,
             2,
             2,
@@ -800,7 +866,7 @@ mod tests {
     fn test_aligner_span_1() {
         let pattern = b"AATTTAAGTCTAGGCTACTTTC";
         let text = b"CCGACTACTACGAAATTTAAGTATAGGCTACTTTCCGTACGTACGTACGT";
-        let mut aligner = WFAlignerGapAffine2Pieces::new(
+        let mut aligner = WFAlignerGapAffine2Pieces::create_aligner(
             8,
             4,
             2,
@@ -822,7 +888,7 @@ mod tests {
     fn test_aligner_span_2() {
         let pattern = b"GGGATCCCCGAAAAAGCGGGTTTGGCAAAAGCAAATTTCCCGAGTAAGCAGGCAGAGATCGCGCCAGACGCTCCCCAGAGCAGGGCGTCATGCACAAGAAAGCTTTGCACTTTGCGAACCAACGATAGGTGGGGGTGCGTGGAGGATGGAACACGGACGGCCCGGCTTGCTGCCTTCCCAGGCCTGCAGTTTGCCCATCCACGTCAGGGCCTCAGCCTGGCCGAAAGAAAGAAATGGTCTGTGATCCCCC";
         let text = b"AGCAGGGCGTCATGCACAAGAAAGCTTTGCACTTTGCGAACCAACGATAGGTGGGGGTGCGTGGAGGATGGAACACGGACGGCCCGGCTTGCTGCCTTCCCAGGCCTGCAGTTTGCCCATCCACGTCAGGGCCTCAGCCTGGCCGAAAGAAAGAAATGGTCTGTGATCCCCCCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCAGCATTCCCGGCTACAAGGACCCTTCGAGCCCCGTTCGCCGGCCGCGGACCCGGCCCCTCCCTCCCCGGCCGCTAGGGGGCGGGCCCGGATCACAGGACTGGAGCTGGGCGGAGACCCACGCTCGGAGCGGTTGTGAACTGGCAGGCGGTGGGCGCGGCTTCTGTGCCGTGCCCCGGGCACTCAGTCTTCCAACGGGGCCCCGGAGTCGAAGACAGTTCTAGGGTTCAGGGAGCGCGGGCGGCTCCTGGGCGGCGCCAGACTGCGGTGAGTTGGCCGGCGTGGGCCACCAACCCAATGCAGCCCAGGGCGGCGGCACGAGACAGAACAACGGCGAACAGGAGCAGGGAAAGCGCCTCCGATAGGCCAGGCCTAGGGACCTGCGGGGAGAGGGCGAGGTCAACACCCGGCATGGGCCTCTGATTGGCTCCTGGGACTCGCCCCGCCTACGCCCATAGGTGGGCCCGCACTCTTCCCTGCGCCCCGCCCCCGCCCCAACAGCCT";
-        let mut aligner = WFAlignerGapAffine2Pieces::new(
+        let mut aligner = WFAlignerGapAffine2Pieces::create_aligner(
             8,
             4,
             2,
@@ -846,8 +912,13 @@ mod tests {
     fn test_aligner_ends_free_global() {
         let pattern = b"AATTTAAGTCTAGGCTACTTTC";
         let text = b"CCGACTACTACGAAATTTAAGTATAGGCTACTTTCCGTACGTACGTACGT";
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryHigh,
+        );
         let status = aligner.align_ends_free(pattern, 0, 0, text, 0, text.len() as i32);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -36);
@@ -863,8 +934,13 @@ mod tests {
     fn test_aligner_ends_free_right_extent() {
         let pattern = b"AATTTAAGTCTGCTACTTTCACGCAGCT";
         let text = b"AATTTCAGTCTGGCTACTTTCACGTACGATGACAGACTCT";
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryHigh,
+        );
         let status =
             aligner.align_ends_free(pattern, 0, pattern.len() as i32, text, 0, text.len() as i32);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
@@ -881,8 +957,13 @@ mod tests {
     fn test_aligner_ends_free_left_extent() {
         let pattern = b"CTTTCACGTACGTGACAGTCTCT";
         let text = b"AATTTCAGTCTGGCTACTTTCACGTACGATGACAGACTCT";
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryHigh,
+        );
         let status = aligner.align_ends_free(pattern, 0, 0, text, 0, 0);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -48);
@@ -898,8 +979,13 @@ mod tests {
     fn test_aligner_ends_free_right_overlap() {
         let pattern = b"CGCGTCTGACTGACTGACTAAACTTTCATGTACCTGACA";
         let text = b"AAACTTTCACGTACGTGACATATAGCGATCGATGACT";
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryHigh,
+        );
         let status = aligner.align_ends_free(pattern, 0, 0, text, 0, 0);
         assert_eq!(status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -92);
@@ -924,7 +1010,7 @@ mod tests {
         let text = [text_lf, &motif.repeat(10)[..], text_rf].concat();
         let pattern = [pattern_lf, &motif.repeat(8)[..], pattern_rf].concat();
 
-        let mut aligner = WFAlignerGapAffine2Pieces::new(
+        let mut aligner = WFAlignerGapAffine2Pieces::create_aligner(
             8,
             4,
             2,
@@ -979,7 +1065,7 @@ mod tests {
         ];
 
         for test in tests {
-            let mut aligner = WFAlignerGapAffine2Pieces::new(
+            let mut aligner = WFAlignerGapAffine2Pieces::create_aligner(
                 8,
                 4,
                 2,
@@ -1001,8 +1087,13 @@ mod tests {
 
     #[test]
     fn test_set_heuristic() {
-        let mut aligner =
-            WFAlignerGapAffine::new(6, 4, 2, AlignmentScope::Alignment, MemoryModel::MemoryHigh);
+        let mut aligner = WFAlignerGapAffine::create_aligner(
+            6,
+            4,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryHigh,
+        );
         aligner.set_heuristic(Heuristic::WFmash(1, 2, 3));
         aligner.set_heuristic(Heuristic::BandedStatic(1, 2));
         aligner.set_heuristic(Heuristic::BandedAdaptive(1, 2, 3));
@@ -1017,7 +1108,7 @@ mod tests {
         let read = b"GCTGCTACTGGGGTGTCCCCTCTCAAAGGACAAACCCAGGATCTACAGATGTGTGTGCTAAGCCATGTATGCACATGCACGTGTGTGTGTATATATTTAACCTATCTGTATATATGTATTATGTAAACATGAGTTCCTGCTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCCTGCTGGCATATCTGACTATAACTGACCACCTCACAGTCCATTCTGATCTCTATATATGTATTATGTAAACATGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATTATGTAAACATGAGTTCCCTGCTGGCATATCTGATTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATTATGTAAACATGAGTTCCTACTGGCATATCTGACTATAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGAGTTCCTGCTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTGCTGGCATATCTGACTATAACTGACCACCTCAGGGTCTATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTGCTGGCATATCTGATTATAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATTATGTAAACATGAGTTCCTACTGGCATATCTGACTATAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGATCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTGGCTGGCATATCTGATTATAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGAGTTCCTGCTGGCATATCTGATTATAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCCCGCTGGCTTTTCCATGACTTCCTTATCCAGCTGTGAGAACCCTGACTCTTACTACCCATACTGTATTGACTTATTT";
         let allele = b"GCTGCTACTGGGGTGTCCCCTCTCAAAGGACAAACCCAGGATCTACAGATGTGTGTGCTAAGCCATGTATGCACACGCACGTGTGTGTGTATATATTTAACCTATCTGTATATATGTATTATGTAAACATGAGTTCCTGCTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGACTTCCTACTGGCATATCTGACTGTAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGATTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTTCATTCCGATCTGTATATAAGTATCATGTAAACACGAGTTCCTGCTGGCATATCTGACTGTAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGAGTTCCTGCTGGCATATCTGACTATAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATGTATGTATCATGTAAACACGAGTTCCTACTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCCGATCTGTATATAAGTATCATGTAAACACGAGTTCCTGCTGGCATATCTGACTGTAACCGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACACGAGTTCCTGCTGGCATATCTGACTATAACTGACCACCTCAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGCATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTGCTGGCATATCTGTCTATAACCGACCACCTTAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGTCCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTGCTGGCATATCTGTCTATAACCGACCACCTTAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCATTCTGATCTGCATATATGTATAATATATATTATATATGGTCCTCAGGGTCCATTCTGATCTGTATATATGTATCATGTAAACATGAGTTCCTGCTGGCATATCTGTCTATAACCGACCACCTTAGGGTCCATTCTGATCTGTATATATGTATAATATATATTATATATGGACCTCAGGGTCCCCGCTGGCTTTTCCATGACTTCCTTATCCAGCTGTGAGAACCCTGACTCTTACTACTGTATTGACTTATTTGTGAAACCT";
 
-        let mut aligner = WFAlignerGapAffine2Pieces::new(
+        let mut aligner = WFAlignerGapAffine2Pieces::create_aligner(
             8,
             4,
             2,
@@ -1034,5 +1125,53 @@ mod tests {
         let _status = aligner.align_end_to_end(read, allele);
         assert_eq!(_status, AlignmentStatus::StatusAlgCompleted);
         assert_eq!(aligner.score(), -881);
+    }
+
+    #[test]
+    fn test_get_penalties() {
+        let aligner =
+            WFAlignerEdit::create_aligner(AlignmentScope::Alignment, MemoryModel::MemoryLow);
+        assert_eq!(aligner.get_penalties(), (0, 4, Some(2), None, None, None));
+
+        let aligner =
+            WFAlignerIndel::create_aligner(AlignmentScope::Alignment, MemoryModel::MemoryLow);
+        assert_eq!(aligner.get_penalties(), (0, 4, Some(2), None, None, None));
+
+        let aligner = WFAlignerGapLinear::create_aligner(
+            12,
+            24,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryLow,
+        );
+
+        assert_eq!(aligner.get_penalties(), (0, 12, Some(24), None, None, None));
+
+        let aligner = WFAlignerGapAffine::create_aligner(
+            12,
+            24,
+            2,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryLow,
+        );
+
+        assert_eq!(
+            aligner.get_penalties(),
+            (0, 12, Some(24), Some(2), None, None)
+        );
+
+        let aligner = WFAlignerGapAffine2Pieces::create_aligner(
+            12,
+            24,
+            2,
+            48,
+            1,
+            AlignmentScope::Alignment,
+            MemoryModel::MemoryLow,
+        );
+
+        assert_eq!(
+            aligner.get_penalties(),
+            (0, 12, Some(24), Some(2), Some(48), Some(1))
+        );
     }
 }

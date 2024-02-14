@@ -1,19 +1,19 @@
-use crate::aligner::{AlignmentScope, MemoryModel, WFAligner, WFAlignerGapAffine2Pieces};
 use crate::{
+    aligner::{AlignmentScope, MemoryModel, WFAligner, WFAlignerGapAffine2Pieces},
     allele,
     cli::TrioArgs,
     handles, locus,
-    util::{self},
+    util::{self, AlnScoring, Params},
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use csv::WriterBuilder;
 use log;
 use noodles::{
     bed,
     fasta::{self, io::BufReadSeek},
 };
-use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
+use once_cell::sync::OnceCell;
+use rayon::{prelude::*, ThreadPoolBuilder};
 use std::{
     cell::RefCell,
     fs,
@@ -23,16 +23,23 @@ use std::{
     time::Instant,
 };
 
-thread_local! {
-    static ALIGNER: RefCell<WFAligner> = RefCell::new(WFAlignerGapAffine2Pieces::new(
-        8,
-        4,
-        2,
-        24,
-        1,
+fn create_aligner_with_scoring() -> WFAligner {
+    let aln_scoring = ALN_SCORING.get().expect("AlnScoring not initialized");
+    WFAlignerGapAffine2Pieces::create_aligner(
+        aln_scoring.mismatch,
+        aln_scoring.gap_opening1,
+        aln_scoring.gap_extension1,
+        aln_scoring.gap_opening2,
+        aln_scoring.gap_extension2,
         AlignmentScope::Alignment,
-        MemoryModel::MemoryLow
-    ));
+        MemoryModel::MemoryLow,
+    )
+}
+
+static ALN_SCORING: OnceCell<AlnScoring> = OnceCell::new();
+
+thread_local! {
+    static ALIGNER: RefCell<WFAligner> = RefCell::new(create_aligner_with_scoring());
 }
 
 pub fn trio(args: TrioArgs) -> Result<()> {
@@ -42,7 +49,19 @@ pub fn trio(args: TrioArgs) -> Result<()> {
         *crate::cli::FULL_VERSION
     );
     let start_timer = Instant::now();
+
+    ALN_SCORING
+        .set(args.aln_scoring)
+        .map_err(|_| anyhow!("AlnScoring was already set"))?;
+
     let clip_len = if args.no_clip_aln { 0 } else { args.flank_len };
+
+    let params = Params {
+        clip_len,
+        parent_quantile: args.parent_quantile,
+        partition_by_alignment: args.partition_by_alignment,
+    };
+    let params_arc = Arc::new(params);
 
     let handles =
         handles::Handles::new(&args.mother_prefix, &args.father_prefix, &args.child_prefix)
@@ -74,13 +93,9 @@ pub fn trio(args: TrioArgs) -> Result<()> {
 
             ALIGNER.with(|aligner| {
                 let mut aligner = aligner.borrow_mut();
-                if let Ok(result) = allele::process_alleles(
-                    &locus,
-                    handles_arc,
-                    clip_len,
-                    args.parent_quantile,
-                    &mut aligner,
-                ) {
+                if let Ok(result) =
+                    allele::process_alleles(&locus, handles_arc, &params_arc, &mut aligner)
+                {
                     for row in result {
                         if let Err(err) = csv_wtr.serialize(row) {
                             log::error!("Failed to write record: {}", err);
@@ -111,7 +126,7 @@ pub fn trio(args: TrioArgs) -> Result<()> {
                 }
             });
 
-            log::info!("Starting job pool with {} threads...", args.num_threads);
+            log::info!("Starting job pool with {} thread(s)...", args.num_threads);
             let pool = ThreadPoolBuilder::new()
                 .num_threads(args.num_threads)
                 .build()
@@ -127,8 +142,7 @@ pub fn trio(args: TrioArgs) -> Result<()> {
                             if let Ok(result) = allele::process_alleles(
                                 &locus,
                                 handles_arc.clone(),
-                                clip_len,
-                                args.parent_quantile,
+                                &params_arc.clone(),
                                 &mut aligner,
                             ) {
                                 s.send(result).unwrap();

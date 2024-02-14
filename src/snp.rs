@@ -1,7 +1,15 @@
-use crate::{allele::Allele, read::ReadInfo};
+//! SNP analysis module.
+//!
+//! This module provides functionality for analyzing SNPs within genomic data.
+//! It includes structures and functions for representing family members, calculating
+//! SNP similarities, and determining inheritance probabilities.
+
+use crate::{allele::AlleleSet, read::ReadInfo};
 use ndarray::{s, Array2, ArrayView1, ArrayView2};
-use std::collections::{HashMap, HashSet};
-use std::iter;
+use std::{
+    collections::{HashMap, HashSet},
+    iter,
+};
 
 #[cfg(not(test))]
 mod constants {
@@ -15,6 +23,7 @@ mod constants {
     pub const MIN_SNP_FREQ: f64 = 0.2;
 }
 
+/// Represents a family member in the context of SNP analysis.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FamilyMember {
     Father,
@@ -32,94 +41,108 @@ impl FamilyMember {
     }
 }
 
+/// Stores the offsets for SNP analysis for a family member.
+///
+/// This struct is used to keep track of the start and end offsets within the SNP matrix,
+/// as well as the offsets for each allele.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FamilyOffsets {
+    /// The start offset in the SNP matrix for this family member.
     pub start_offset: usize,
+    /// The end offset in the SNP matrix for this family member.
     pub end_offset: usize,
+    /// A vector of offsets for each allele of this family member.
     pub allele_offsets: Vec<usize>,
 }
 
+/// Represents a matrix used for SNP analysis, encoding the presence or absence of SNPs.
+///
+/// This matrix is used to compare SNP positions across family members and to calculate
+/// inheritance probabilities. It uses a trinary encoding where `0` indicates absence,
+/// `1` indicates presence, and `2` indicates missing information.
 #[derive(Debug, PartialEq)]
 pub struct TrinaryMatrix {
+    /// The underlying matrix storing SNP information.
     pub matrix: Array2<u8>,
+    /// Offsets for each family member within the matrix.
     pub offsets: [FamilyOffsets; 3],
+    /// A vector of mismatch offsets used for SNP analysis.
     pub mismatch_offsets: Vec<i32>,
 }
 
+/// Provides methods for working with the `TrinaryMatrix`.
 impl TrinaryMatrix {
-    pub fn new(
-        child: &Vec<Allele>,
-        father: &Vec<Allele>,
-        mother: &Vec<Allele>,
-    ) -> Option<TrinaryMatrix> {
-        let mut n_reads = 0;
-        let mut all_pois: HashSet<i32> = HashSet::new();
+    /// Creates a new `TrinaryMatrix` from the given alleles of a family trio.
+    ///
+    /// # Arguments
+    ///
+    /// * `child` - A slice of `Allele` instances for the child.
+    /// * `father` - A slice of `Allele` instances for the father.
+    /// * `mother` - A slice of `Allele` instances for the mother.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<TrinaryMatrix>` which is `None` if no SNPs are found, or contains the constructed matrix otherwise.
+    pub fn new(child: &AlleleSet, father: &AlleleSet, mother: &AlleleSet) -> Option<TrinaryMatrix> {
+        let mut total_reads = 0;
+        let mut pois_set: HashSet<i32> = HashSet::new();
         let family_members = [father, mother, child];
 
         for family_member in &family_members {
             for allele in *family_member {
-                n_reads += allele.read_aligns.len();
-                for (read, _) in &allele.read_aligns {
-                    all_pois.extend(read.mismatch_offsets.as_ref().unwrap());
-                }
+                total_reads += allele.read_aligns.len();
+                allele
+                    .read_aligns
+                    .iter()
+                    .filter_map(|(read, _)| read.mismatch_offsets.as_ref())
+                    .for_each(|mismatches| {
+                        pois_set.extend(mismatches);
+                    });
             }
         }
 
-        if all_pois.is_empty() {
+        if pois_set.is_empty() {
             return None;
         }
 
-        let mut all_pois: Vec<i32> = all_pois.into_iter().collect();
-        all_pois.sort_unstable();
+        let mut pois: Vec<i32> = pois_set.into_iter().collect();
+        pois.sort_unstable();
 
-        let mut matrix = Array2::from_elem((n_reads, all_pois.len()), 2);
+        let mut matrix = Array2::from_elem((total_reads, pois.len()), 2);
 
-        // TODO: ideally want: offsets = [FamilyOffsets::default(); 3], can't because of vec, maybe box Vec?
-        let mut offsets = [
-            (FamilyOffsets {
-                start_offset: 0,
-                end_offset: 0,
-                allele_offsets: Vec::new(),
-            }),
-            (FamilyOffsets {
-                start_offset: 0,
-                end_offset: 0,
-                allele_offsets: Vec::new(),
-            }),
-            (FamilyOffsets {
-                start_offset: 0,
-                end_offset: 0,
-                allele_offsets: Vec::new(),
-            }),
-        ];
+        let mut offsets: [FamilyOffsets; 3] = std::iter::repeat_with(FamilyOffsets::default)
+            .take(3)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or_else(|_| unreachable!());
 
-        let mut row_idx = 0;
-        let mut allele_offsets = Vec::new();
+        let mut current_row = 0;
+        let mut allele_offsets = Vec::with_capacity(total_reads);
         for (member_idx, family_member) in family_members.iter().enumerate() {
-            let start_offset = row_idx;
+            let start_offset = current_row;
             for (allele_idx, allele) in family_member.iter().enumerate() {
                 if allele_idx > 0 {
-                    allele_offsets.push(row_idx);
+                    allele_offsets.push(current_row);
                 }
                 for (read, _) in &allele.read_aligns {
                     let mismatch_offsets = read.mismatch_offsets.as_ref().unwrap();
-                    let start_col_idx = all_pois
+                    let start_col = pois
                         .binary_search(&read.start_offset.unwrap())
                         .unwrap_or_else(|x| x);
-                    let end_col_idx = all_pois
+                    let end_col = pois
                         .binary_search(&read.end_offset.unwrap())
                         .unwrap_or_else(|x| x);
-                    for col_idx in start_col_idx..end_col_idx {
-                        let offset = all_pois[col_idx];
-                        matrix[[row_idx, col_idx]] =
+                    for col in start_col..end_col {
+                        let offset = pois[col];
+                        matrix[[current_row, col]] =
                             mismatch_offsets.binary_search(&offset).is_ok() as u8;
                     }
-                    row_idx += 1;
+                    current_row += 1;
                 }
             }
             offsets[member_idx] = FamilyOffsets {
                 start_offset,
-                end_offset: row_idx - 1,
+                end_offset: current_row - 1,
                 allele_offsets: allele_offsets.clone(),
             };
             allele_offsets.clear();
@@ -128,16 +151,42 @@ impl TrinaryMatrix {
         Some(TrinaryMatrix {
             matrix,
             offsets,
-            mismatch_offsets: all_pois,
+            mismatch_offsets: pois,
         })
     }
 
+    /// Retrieves a submatrix view for a specific family member's SNPs.
+    ///
+    /// Returns a view of the SNP matrix that corresponds to the SNPs
+    /// associated with the specified family member.
+    ///
+    /// # Arguments
+    ///
+    /// * `member` - The family member for which to retrieve the SNP submatrix.
+    ///
+    /// # Returns
+    ///
+    /// An `ArrayView2<u8>` representing the submatrix of SNPs for the given family member.
     pub fn family_submatrix(&self, member: FamilyMember) -> ArrayView2<u8> {
         let offset = &self.offsets[member.index()];
         self.matrix
             .slice(s![offset.start_offset..=offset.end_offset, ..])
     }
 
+    /// Retrieves a submatrix view for a specific allele of a family member.
+    ///
+    /// Returns a view of the SNP matrix that corresponds to the SNPs
+    /// associated with a particular allele of the specified family member.
+    ///
+    /// # Arguments
+    ///
+    /// * `member` - The family member to which the allele belongs.
+    /// * `allele_idx` - The index of the allele within the family member's alleles.
+    ///
+    /// # Returns
+    ///
+    /// An `Option<ArrayView2<u8>>` representing the submatrix of SNPs for the given allele,
+    /// or `None` if the allele index is out of bounds.
     pub fn allele_submatrix(
         &self,
         member: FamilyMember,
@@ -164,10 +213,20 @@ impl TrinaryMatrix {
         Some(self.matrix.slice(s![start_offset..=end_offset, ..]))
     }
 
-    pub fn iter_alleles<'a>(
-        &'a self,
-        member: FamilyMember,
-    ) -> impl Iterator<Item = ArrayView2<u8>> + 'a {
+    /// Creates an iterator over submatrices for each allele of a family member.
+    ///
+    /// Returns an iterator that yields views of the SNP matrix for each allele
+    /// of the specified family member. Each item in the iterator is a submatrix corresponding
+    /// to a single allele's SNPs.
+    ///
+    /// # Arguments
+    ///
+    /// * `member` - The family member whose alleles are to be iterated over.
+    ///
+    /// # Returns
+    ///
+    /// An iterator over `ArrayView2<u8>` where each item is a submatrix for an allele of the family member.
+    pub fn iter_alleles(&self, member: FamilyMember) -> impl Iterator<Item = ArrayView2<u8>> {
         let offset = &self.offsets[member.index()];
         let start_offsets =
             iter::once(offset.start_offset).chain(offset.allele_offsets.iter().cloned());
@@ -188,30 +247,16 @@ impl TrinaryMatrix {
     }
 }
 
-pub trait ReadFilter {
-    fn filter(&self, reads: &mut Vec<ReadInfo>);
-}
-
-pub struct FilterByDist;
-impl ReadFilter for FilterByDist {
-    fn filter(&self, reads: &mut Vec<ReadInfo>) {
-        for read in reads.iter_mut() {
-            if let Some(offsets) = &mut read.mismatch_offsets {
-                offsets.drain(
-                    ..offsets
-                        .binary_search(&(-constants::MAX_SNP_DIFF - 1))
-                        .unwrap_or_else(|x| x),
-                );
-                offsets.drain(
-                    offsets
-                        .binary_search(&(constants::MAX_SNP_DIFF + 1))
-                        .unwrap_or_else(|x| x)..,
-                );
-            }
-        }
-    }
-}
-
+/// Calculates the similarity between a child's SNP row and a parent's SNP row.
+///
+/// # Arguments
+///
+/// * `child_row` - A view of the SNP row for the child.
+/// * `parent_row` - A view of the SNP row for the parent.
+///
+/// # Returns
+///
+/// A `f64` representing the similarity score between the two rows.
 fn calc_similarity(child_row: &ArrayView1<u8>, parent_row: &ArrayView1<u8>) -> f64 {
     let mut matching_positions = 0;
     let mut total_covered_positions = 0;
@@ -238,6 +283,16 @@ fn calc_similarity(child_row: &ArrayView1<u8>, parent_row: &ArrayView1<u8>) -> f
     matching_positions as f64 / total_covered_positions
 }
 
+/// Calculates the likelihood of inheritance based on the similarity of SNP rows between a child and a parent.
+///
+/// # Arguments
+///
+/// * `child_allele` - A view of the SNP matrix for the child's allele.
+/// * `parent_allele` - A view of the SNP matrix for the parent's allele.
+///
+/// # Returns
+///
+/// A `f64` representing the likelihood of inheritance.
 fn get_likelihood(child_allele: ArrayView2<u8>, parent_allele: ArrayView2<u8>) -> f64 {
     let similarity_scores: Vec<f64> = child_allele
         .outer_iter()
@@ -252,6 +307,16 @@ fn get_likelihood(child_allele: ArrayView2<u8>, parent_allele: ArrayView2<u8>) -
     likelihood
 }
 
+/// Determines the individual probability of inheritance for a given child allele.
+///
+/// # Arguments
+///
+/// * `trinary_matrix` - A reference to the `TrinaryMatrix`.
+/// * `child_allele_idx` - The index of the child's allele.
+///
+/// # Returns
+///
+/// An `Option<(Vec<f64>, f64)>` containing the posterior probabilities and the maximum likelihood, or `None` if the allele is empty.
 fn get_individual_prob(
     trinary_matrix: &TrinaryMatrix,
     child_allele_idx: usize,
@@ -304,6 +369,18 @@ fn get_individual_prob(
     Some((posteriors, max_likelihood))
 }
 
+/// Combines the probabilities of two child alleles to determine the overall inheritance probabilities.
+///
+/// # Arguments
+///
+/// * `child_allele1_prob` - A slice of probabilities for the first child allele.
+/// * `child_allele2_prob` - A slice of probabilities for the second child allele.
+/// * `father_count` - The number of alleles for the father.
+/// * `mother_count` - The number of alleles for the mother.
+///
+/// # Returns
+///
+/// A `HashMap<String, f64>` containing the combined probabilities for each inheritance hypothesis.
 fn combine_probabilities(
     child_allele1_prob: &[f64],
     child_allele2_prob: &[f64],
@@ -312,14 +389,20 @@ fn combine_probabilities(
 ) -> HashMap<String, f64> {
     let mut combined_probabilities = HashMap::new();
     let mut total_prob = 0.0;
-
-    for i in 0..(father_count + mother_count) {
-        for j in 0..(father_count + mother_count) {
+    for (i, c1_prob) in child_allele1_prob
+        .iter()
+        .enumerate()
+        .take(father_count + mother_count)
+    {
+        for (j, c2_prob) in child_allele2_prob
+            .iter()
+            .enumerate()
+            .take(father_count + mother_count)
+        {
             if (i < father_count && j < father_count) || (i >= father_count && j >= father_count) {
                 continue;
             }
-
-            let probability = child_allele1_prob[i] * child_allele2_prob[j];
+            let probability = c1_prob * c2_prob;
             combined_probabilities.insert(format!("H{}_{}", i, j), probability);
             total_prob += probability;
         }
@@ -333,6 +416,15 @@ fn combine_probabilities(
     combined_probabilities
 }
 
+/// Calculates the probabilities of inheritance for each possible combination of parental alleles.
+///
+/// # Arguments
+///
+/// * `trinary_matrix` - A reference to the `TrinaryMatrix`.
+///
+/// # Returns
+///
+/// An `Option<(HashMap<String, f64>, (f64, f64))>` containing the inheritance probabilities and the maximum likelihoods for each child allele, or `None` if there are more than two alleles.
 pub fn inheritance_prob(
     trinary_matrix: &TrinaryMatrix,
 ) -> Option<(HashMap<String, f64>, (f64, f64))> {
@@ -343,7 +435,7 @@ pub fn inheritance_prob(
             for (i, prob) in child_allele1_prob.iter().enumerate() {
                 result.insert(i.to_string(), *prob);
             }
-            Some((result, ((max_likelihood, -1.0))))
+            Some((result, (max_likelihood, -1.0)))
         }
         2 => {
             let (child_allele1_prob, max_likelihood_1) = get_individual_prob(trinary_matrix, 0)?;
@@ -362,6 +454,44 @@ pub fn inheritance_prob(
     }
 }
 
+/// Defines a trait for filtering reads based on SNP criteria.
+///
+/// Implementors of this trait provide methods to filter reads to remove noise and improve SNP analysis accuracy.
+pub trait ReadFilter {
+    /// Filters a vector of `ReadInfo` instances based on specific criteria.
+    ///
+    /// # Arguments
+    ///
+    /// * `reads` - A mutable reference to a vector of `ReadInfo` instances to be filtered.
+    fn filter(&self, reads: &mut Vec<ReadInfo>);
+}
+
+/// A `ReadFilter` that filters reads based on distance criteria.
+///
+/// This filter removes SNPs that are too far from the region of interest, as defined by a maximum distance threshold.
+pub struct FilterByDist;
+impl ReadFilter for FilterByDist {
+    fn filter(&self, reads: &mut Vec<ReadInfo>) {
+        for read in reads.iter_mut() {
+            if let Some(offsets) = &mut read.mismatch_offsets {
+                offsets.drain(
+                    ..offsets
+                        .binary_search(&(-constants::MAX_SNP_DIFF - 1))
+                        .unwrap_or_else(|x| x),
+                );
+                offsets.drain(
+                    offsets
+                        .binary_search(&(constants::MAX_SNP_DIFF + 1))
+                        .unwrap_or_else(|x| x)..,
+                );
+            }
+        }
+    }
+}
+
+/// A `ReadFilter` that filters reads based on frequency criteria.
+///
+/// This filter retains SNPs that occur with a frequency above a specified threshold, ensuring that only common SNPs are considered.
 pub struct FilterByFreq;
 impl ReadFilter for FilterByFreq {
     fn filter(&self, reads: &mut Vec<ReadInfo>) {
@@ -386,6 +516,12 @@ impl ReadFilter for FilterByFreq {
     }
 }
 
+/// Applies a set of read filters to a vector of `ReadInfo` instances.
+///
+/// # Arguments
+///
+/// * `reads` - A mutable reference to a vector of `ReadInfo` instances to be filtered.
+/// * `filters` - A slice of references to objects that implement the `ReadFilter` trait.
 pub fn apply_read_filters(reads: &mut Vec<ReadInfo>, filters: &[&(dyn ReadFilter + Sync)]) {
     for filter in filters {
         filter.filter(reads);
@@ -395,7 +531,7 @@ pub fn apply_read_filters(reads: &mut Vec<ReadInfo>, filters: &[&(dyn ReadFilter
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read::ReadInfoBuilder;
+    use crate::{allele::Allele, read::ReadInfoBuilder};
     use itertools::Itertools;
 
     fn create_read_info(
@@ -413,9 +549,18 @@ mod tests {
 
     #[test]
     fn test_empty_trinary_matrix() {
-        let child_alleles: Vec<Allele> = vec![];
-        let father_alleles: Vec<Allele> = vec![];
-        let mother_alleles: Vec<Allele> = vec![];
+        let child_alleles = AlleleSet {
+            alleles: vec![],
+            hp_counts: [0; 3],
+        };
+        let father_alleles = AlleleSet {
+            alleles: vec![],
+            hp_counts: [0; 3],
+        };
+        let mother_alleles = AlleleSet {
+            alleles: vec![],
+            hp_counts: [0; 3],
+        };
         let trinaray_mat: Option<TrinaryMatrix> =
             TrinaryMatrix::new(&child_alleles, &father_alleles, &mother_alleles);
         assert_eq!(trinaray_mat, None);
@@ -424,49 +569,58 @@ mod tests {
     // TODO: split into multiple tests
     #[test]
     fn test_trinary_matrix() {
-        let father_alleles = vec![
-            Allele::dummy(vec![
-                create_read_info(vec![-8, -2, 3, 5, 8, 42], -12, 70),
-                create_read_info(vec![-2, 3, 5, 8], -6, 30),
-                create_read_info(vec![3, 5, 8, 42], 0, 50),
-            ]),
-            Allele::dummy(vec![
-                create_read_info(vec![-8, -4, 2], -22, 30),
-                create_read_info(vec![-8, -4, 2], -40, 60),
-                create_read_info(vec![-8, -4, 2], -30, 90),
-            ]),
-        ];
+        let father_alleles = AlleleSet {
+            alleles: vec![
+                Allele::dummy(vec![
+                    create_read_info(vec![-8, -2, 3, 5, 8, 42], -12, 70),
+                    create_read_info(vec![-2, 3, 5, 8], -6, 30),
+                    create_read_info(vec![3, 5, 8, 42], 0, 50),
+                ]),
+                Allele::dummy(vec![
+                    create_read_info(vec![-8, -4, 2], -22, 30),
+                    create_read_info(vec![-8, -4, 2], -40, 60),
+                    create_read_info(vec![-8, -4, 2], -30, 90),
+                ]),
+            ],
+            hp_counts: [0; 3],
+        };
 
-        let mother_alleles = vec![
-            Allele::dummy(vec![
-                create_read_info(vec![-4, -1, 2, 6], -5, 7),
-                create_read_info(vec![-4, -1, 2, 6, 23], -20, 70),
-                create_read_info(vec![2, 6, 23], 1, 120),
-            ]),
-            // Allele::dummy(vec![
-            //     create_read_info(vec![6, 23], -30, 40),
-            //     create_read_info(vec![6, 23], -10, 90),
-            //     create_read_info(vec![6, 23], -2, 120),
-            // ]),
-        ];
+        let mother_alleles = AlleleSet {
+            alleles: vec![
+                Allele::dummy(vec![
+                    create_read_info(vec![-4, -1, 2, 6], -5, 7),
+                    create_read_info(vec![-4, -1, 2, 6, 23], -20, 70),
+                    create_read_info(vec![2, 6, 23], 1, 120),
+                ]),
+                // Allele::dummy(vec![
+                //     create_read_info(vec![6, 23], -30, 40),
+                //     create_read_info(vec![6, 23], -10, 90),
+                //     create_read_info(vec![6, 23], -2, 120),
+                // ]),
+            ],
+            hp_counts: [0; 3],
+        };
 
-        let child_alleles = vec![
-            Allele::dummy(vec![
-                create_read_info(vec![-8, -2, 3, 5, 8, 42], -12, 70),
-                create_read_info(vec![-8, -2, 3, 5, 8], -10, 30),
-                create_read_info(vec![3, 5, 8, 42], 0, 50),
-            ]),
-            Allele::dummy(vec![
-                create_read_info(vec![-4, -1, 2, 6, 23], -40, 90),
-                create_read_info(vec![-4, -1, 2, 6], -32, 20),
-                create_read_info(vec![2, 6, 23], 1, 120),
-            ]),
-            Allele::dummy(vec![create_read_info(vec![], -40, 90)]),
-            Allele::dummy(vec![
-                create_read_info(vec![-1, 2, 6], -32, 20),
-                create_read_info(vec![2, 6], 1, 10),
-            ]),
-        ];
+        let child_alleles = AlleleSet {
+            alleles: vec![
+                Allele::dummy(vec![
+                    create_read_info(vec![-8, -2, 3, 5, 8, 42], -12, 70),
+                    create_read_info(vec![-8, -2, 3, 5, 8], -10, 30),
+                    create_read_info(vec![3, 5, 8, 42], 0, 50),
+                ]),
+                Allele::dummy(vec![
+                    create_read_info(vec![-4, -1, 2, 6, 23], -40, 90),
+                    create_read_info(vec![-4, -1, 2, 6], -32, 20),
+                    create_read_info(vec![2, 6, 23], 1, 120),
+                ]),
+                Allele::dummy(vec![create_read_info(vec![], -40, 90)]),
+                Allele::dummy(vec![
+                    create_read_info(vec![-1, 2, 6], -32, 20),
+                    create_read_info(vec![2, 6], 1, 10),
+                ]),
+            ],
+            hp_counts: [0; 3],
+        };
 
         let trinaray_mat =
             TrinaryMatrix::new(&child_alleles, &father_alleles, &mother_alleles).unwrap();
@@ -640,5 +794,42 @@ mod tests {
         );
         assert_eq!(reads[3].mismatch_offsets.as_ref().unwrap(), &vec![]);
         assert_eq!(reads[4].mismatch_offsets.as_ref().unwrap(), &vec![2000]);
+    }
+
+    #[test]
+    fn test_combine_probabilities() {
+        let child_allele1_prob = vec![0.1, 0.2, 0.3, 0.4];
+        let child_allele2_prob = vec![0.3, 0.2, 0.1, 0.4];
+        let father_count = 2;
+        let mother_count = 2;
+
+        let combined_probs = combine_probabilities(
+            &child_allele1_prob,
+            &child_allele2_prob,
+            father_count,
+            mother_count,
+        );
+
+        let expected_probs = HashMap::from([
+            ("H3_1".to_string(), 0.16),
+            ("H2_0".to_string(), 0.18),
+            ("H1_3".to_string(), 0.16),
+            ("H0_3".to_string(), 0.08),
+            ("H1_2".to_string(), 0.04),
+            ("H3_0".to_string(), 0.24),
+            ("H0_2".to_string(), 0.02),
+            ("H2_1".to_string(), 0.12),
+        ]);
+
+        for (key, &expected_prob) in &expected_probs {
+            let combined_prob = combined_probs.get(key).unwrap();
+            assert!(
+                (combined_prob - expected_prob).abs() < 1e-6,
+                "Probabilities do not match for key {}: expected {}, got {}",
+                key,
+                expected_prob,
+                combined_prob
+            );
+        }
     }
 }

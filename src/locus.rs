@@ -1,3 +1,5 @@
+//! Defines the `Locus` struct and associated functions for handling genomic loci.
+//!
 use crate::util::Result;
 use anyhow::{anyhow, Context};
 use noodles::{
@@ -11,16 +13,36 @@ use std::{
     io::BufReader,
 };
 
+/// Represents a genomic locus with its associated information.
+///
+/// A `Locus` contains the identifier, structure, motifs, and flanking sequences
+/// of a genomic region, as well as the region itself.
 #[derive(Debug, PartialEq)]
 pub struct Locus {
+    /// A unique identifier for the locus.
     pub id: String,
+    ///  The structure of the locus.
     pub struc: String,
+    /// A list of motifs associated with the locus.
     pub motifs: Vec<String>,
+    ///  The sequence of the left flanking region.
     pub left_flank: Vec<u8>,
+    /// The sequence of the right flanking region.
     pub right_flank: Vec<u8>,
+    /// The genomic region of the locus.
     pub region: Region,
 }
 
+/// Decodes a single info field from a BED file into a name-value pair.
+///
+/// # Arguments
+///
+/// * `encoding` - A string slice representing the encoded info field.
+///
+/// # Returns
+///
+/// A result containing a tuple with the name and value of the info field if successful,
+/// or an error if the field cannot be decoded.
 fn decode_info_field(encoding: &str) -> Result<(&str, &str)> {
     let mut name_and_value = encoding.splitn(2, '=');
     let name = name_and_value
@@ -32,6 +54,16 @@ fn decode_info_field(encoding: &str) -> Result<(&str, &str)> {
     Ok((name, value))
 }
 
+/// Decodes multiple info fields from a BED file into a hashmap.
+///
+/// # Arguments
+///
+/// * `info_fields` - A string slice representing the encoded info fields.
+///
+/// # Returns
+///
+/// A result containing a hashmap with the names and values of the info fields if successful,
+/// or an error if any field cannot be decoded or if there are duplicate fields.
 fn decode_fields(info_fields: &str) -> Result<HashMap<&str, String>> {
     let mut fields = HashMap::new();
     for field_encoding in info_fields.split(';') {
@@ -43,7 +75,21 @@ fn decode_fields(info_fields: &str) -> Result<HashMap<&str, String>> {
     Ok(fields)
 }
 
+/// Represents a genomic locus with associated information.
 impl Locus {
+    /// Creates a new `Locus` instance from a BED record and genome data.
+    ///
+    /// # Arguments
+    ///
+    /// * `genome` - A mutable reference to an indexed FASTA reader.
+    /// * `chrom_lookup` - A reference to a set containing chromosome names.
+    /// * `line` - A reference to a BED record.
+    /// * `flank_len` - The length of the flanking sequences to retrieve.
+    ///
+    /// # Returns
+    ///
+    /// A result containing the new `Locus` instance if successful, or an error if the
+    /// chromosome is not found, required fields are missing, or flanks cannot be retrieved.
     pub fn new(
         genome: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
         chrom_lookup: &HashSet<String>,
@@ -93,6 +139,19 @@ impl Locus {
     }
 }
 
+/// Retrieves a specific locus by its ID from a BED file using a genome reader.
+///
+/// # Arguments
+///
+/// * `genome_reader` - A mutable reference to an indexed FASTA reader.
+/// * `catalog_reader` - A mutable reference to a BED reader.
+/// * `tr_id` - The ID of the target repeat.
+/// * `flank_len` - The length of the flanking sequences to retrieve.
+///
+/// # Returns
+///
+/// A result containing the `Locus` instance if found, or an error if the locus with the
+/// specified ID cannot be found or processed.
 pub fn get_locus(
     genome_reader: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
     catalog_reader: &mut bed::Reader<BufReader<File>>,
@@ -117,6 +176,18 @@ pub fn get_locus(
     Err(anyhow!("Unable to find locus {tr_id}"))
 }
 
+/// Returns an iterator over all loci in a BED file using a genome reader.
+///
+/// # Arguments
+///
+/// * `genome_reader` - A mutable reference to an indexed FASTA reader.
+/// * `catalog_reader` - A mutable reference to a BED reader.
+/// * `flank_len` - The length of the flanking sequences to retrieve for each locus.
+///
+/// # Returns
+///
+/// An iterator that yields results containing `Locus` instances or errors encountered
+/// during processing.
 pub fn get_loci<'a>(
     genome_reader: &'a mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
     catalog_reader: &'a mut bed::Reader<BufReader<File>>,
@@ -132,28 +203,39 @@ pub fn get_loci<'a>(
     catalog_reader
         .records::<3>()
         .enumerate()
-        .filter_map(move |(line_number, result_line)| match result_line {
-            Ok(line) => Some(Ok((line, line_number))),
-            Err(err) => Some(Err(
-                anyhow!(err).context(format!("Error at BED line {}", line_number + 1))
-            )),
-        })
-        .map(move |result| {
-            result.and_then(|(line, line_number)| {
-                Locus::new(genome_reader, &chrom_lookup, &line, flank_len)
-                    .with_context(|| format!("Error processing BED line {}", line_number + 1))
-            })
+        .map(move |(line_number, result_line)| {
+            result_line
+                .map_err(|err| {
+                    anyhow!(err).context(format!("Error at BED line {}", line_number + 1))
+                })
+                .and_then(|line| {
+                    Locus::new(genome_reader, &chrom_lookup, &line, flank_len)
+                        .with_context(|| format!("Error processing BED line {}", line_number + 1))
+                })
         })
 }
 
+/// Retrieves a flank sequence from the genome given a region and start/end positions.
+///
+/// # Arguments
+///
+/// * `genome` - A mutable reference to an indexed FASTA reader.
+/// * `region` - A reference to the region of interest.
+/// * `start` - The start position of the flank.
+/// * `end` - The end position of the flank.
+///
+/// # Returns
+///
+/// A result containing the flank sequence if successful, or an error if the sequence
+/// cannot be extracted.
 fn get_flank(
     genome: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
     region: &Region,
     start: usize,
     end: usize,
 ) -> Result<Sequence> {
-    let start_pos = Position::try_from(start + 1).unwrap();
-    let end_pos = Position::try_from(end).unwrap();
+    let start_pos = Position::try_from(start + 1)?;
+    let end_pos = Position::try_from(end)?;
     let query_region = Region::new(region.name(), start_pos..=end_pos);
     match genome.query(&query_region) {
         Ok(seq) => Ok(seq.sequence().to_owned()),
@@ -161,6 +243,18 @@ fn get_flank(
     }
 }
 
+/// Retrieves both left and right flank sequences for a given region from the genome.
+///
+/// # Arguments
+///
+/// * `genome` - A mutable reference to an indexed FASTA reader.
+/// * `region` - A reference to the region of interest.
+/// * `flank_len` - The length of the flanking sequences to retrieve.
+///
+/// # Returns
+///
+/// A result containing a tuple with the left and right flank sequences if successful,
+/// or an error if the sequences cannot be extracted.
 fn get_flanks(
     genome: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
     region: &Region,

@@ -2,7 +2,7 @@
 
 <h1 align="center">TRGT-denovo</h1>
 
-<h3 align="center">Calling <em>de novo</em> tandem repeats in trios</h3>
+<h3 align="center">Calling <em>de novo</em> tandem repeat mutations in trios</h3>
 
 ***
 
@@ -18,12 +18,13 @@ Please note that TRGT-denovo is still in early development and is subject to sig
 
 * [Latest release with binary](https://github.com/PacificBiosciences/trgt-denovo/releases/latest)
 
-To build TRGT-denovo you need a working C compiler. It was tested on Linux with Clang 13.0.0 & GCC 11.3.0 and on Mac OSX (M1) with Clang 15.0.7 & GCC 14.0.0.
+To build TRGT-denovo you need a working C compiler: it was tested on Linux with Clang 13.0.0 & GCC 11.3.0 and on Mac OSX (M1) with Clang 15.0.7 & GCC 14.0.0.
 
 ## Documentation
 
-* [Example run](docs/example.md)
-* [Output](docs/output.md)
+* [Getting started](docs/example.md)
+* [Output format](docs/output.md)
+* [Interpretation](docs/interpretation.md)
 * [Command-line interface](docs/cli.md)
 
 ## Need help?
@@ -37,6 +38,17 @@ While efforts have been made to ensure that TRGT-denovo lives up to the quality 
 As TRGT-denovo is not covered by any service level agreement or the like, please do not contact a PacBio Field Applications Scientists or PacBio Customer Service for assistance with any TRGT-denovo release. 
 Please report all issues through GitHub instead. 
 We make no warranty that any such issue will be addressed, to any extent or within any time frame.
+
+## Changelog
+
+- 0.1.2
+  - With the recent changes to TRGT, within-sample partitioning is now alignment-free in TRGT-denovo
+  - Homozygous alleles are no longer collapsed: de novo evidence will now always gathered and be specific to a single allele only
+
+- 0.1.1
+  - Add cli parameter to set aligner penalties
+  - Document the codebase
+  - Update documentation to include interpretation of generated outpput
 
 ### DISCLAIMER
 THIS WEBSITE AND CONTENT AND ALL SITE-RELATED SERVICES, INCLUDING ANY DATA, ARE PROVIDED "AS IS," WITH ALL FAULTS, WITH NO REPRESENTATIONS OR WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, ANY WARRANTIES OF MERCHANTABILITY, SATISFACTORY QUALITY, NON-INFRINGEMENT OR FITNESS FOR A PARTICULAR PURPOSE. YOU ASSUME TOTAL RESPONSIBILITY AND RISK FOR YOUR USE OF THIS SITE, ALL SITE-RELATED SERVICES, AND ANY THIRD PARTY WEBSITES OR APPLICATIONS. NO ORAL OR WRITTEN INFORMATION OR ADVICE SHALL CREATE A WARRANTY OF ANY KIND. ANY REFERENCES TO SPECIFIC PRODUCTS OR SERVICES ON THE WEBSITES DO NOT CONSTITUTE OR IMPLY A RECOMMENDATION OR ENDORSEMENT BY PACIFIC BIOSCIENCES.

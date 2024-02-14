@@ -1,4 +1,4 @@
-use crate::util::Result;
+use crate::util::{AlnScoring, Result};
 use anyhow::anyhow;
 use chrono::Datelike;
 use clap::{ArgAction, ArgGroup, Parser, Subcommand};
@@ -10,6 +10,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Full version string including the crate version and git description.
+///
+/// This version string is used in the command-line interface to provide detailed version information.
+/// It includes the crate version from Cargo.toml and additional build information such as the git commit hash.
+/// # Examples
+/// * `0.1.0-1ba958a-dirty` - while on a dirty branch
+/// * `0.1.0-1ba958a` - with a fresh commit
 pub static FULL_VERSION: Lazy<String> = Lazy::new(|| {
     format!(
         "{}-{}",
@@ -130,8 +137,32 @@ pub struct TrioArgs {
     #[clap(default_value = "1.0")]
     #[arg(value_parser = parse_quantile)]
     pub parent_quantile: f64,
+
+    #[clap(help_heading("Advanced"))]
+    #[clap(long = "aln-scoring")]
+    #[clap(value_name = "SCORING")]
+    #[clap(
+        help = "Scoring function for 2-piece gap affine alignment (non-negative values): mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2"
+    )]
+    #[clap(default_value = "8,4,2,24,1")]
+    #[arg(value_parser = scoring_from_string)]
+    pub aln_scoring: AlnScoring,
+
+    #[clap(help_heading("Advanced"))]
+    #[clap(long = "partition-by-aln")]
+    #[clap(help = "Within-sample partitioning using alignment rather than the TRGT AL field")]
+    #[clap(value_name = "ALN")]
+    pub partition_by_alignment: bool,
 }
 
+/// Initializes the verbosity level for logging based on the command-line arguments.
+///
+/// Sets up the logger with a specific verbosity level that is determined
+/// by the number of occurrences of the `-v` or `--verbose` flag in the command-line arguments.
+///
+/// # Arguments
+///
+/// * `args` - A reference to the parsed command-line arguments.
 pub fn init_verbose(args: &Cli) {
     let filter_level: LevelFilter = match args.verbosity {
         0 => LevelFilter::Info,
@@ -163,6 +194,18 @@ pub fn init_verbose(args: &Cli) {
         .init();
 }
 
+/// Checks if the provided path prefix exists.
+///
+/// Validates that the path prefix provided as an argument exists in the file system.
+/// It is used to ensure that the file paths constructed using this prefix will be valid.
+///
+/// # Arguments
+///
+/// * `s` - A string slice representing the path prefix to check.
+///
+/// # Returns
+///
+/// Returns a `Result<String>` which is Ok if the path prefix exists, or an Err with a descriptive message if not.
 fn check_prefix_path(s: &str) -> Result<String> {
     let path = Path::new(s);
     if let Some(parent_dir) = path.parent() {
@@ -173,21 +216,46 @@ fn check_prefix_path(s: &str) -> Result<String> {
     Ok(s.to_string())
 }
 
+/// Validates that the provided string represents a valid number of threads.
+///
+/// Checks if the string argument can be parsed into a non-zero positive integer
+/// that represents the number of threads to use. It ensures that the number of threads is within
+/// a valid range.
+///
+/// # Arguments
+///
+/// * `s` - A string slice representing the number of threads.
+///
+/// # Returns
+///
+/// Returns a `Result<usize>` which is Ok if the number is valid, or an Err with a descriptive message if not.
 fn threads_in_range(s: &str) -> Result<usize> {
     let thread: usize = s
         .parse::<usize>()
         .map_err(|_| anyhow!("`{}` is not a valid thread number", s))?;
-    if thread <= 0 {
+    if thread == 0 {
         return Err(anyhow!("Number of threads must be >= 1"));
     }
     Ok(thread)
 }
 
+/// Parses a string into a floating-point number representing a quantile.
+///
+/// Attempts to parse a string into a `f64` that represents a quantile value.
+/// It validates that the value is within the range [0.0, 1.0].
+///
+/// # Arguments
+///
+/// * `s` - A string slice representing the quantile to parse.
+///
+/// # Returns
+///
+/// Returns a `Result<f64>` which is Ok if the value is within the valid range, or an Err with a descriptive message if not.
 fn parse_quantile(s: &str) -> Result<f64> {
     let value = s
         .parse::<f64>()
         .map_err(|e| anyhow!("Could not parse float: {}", e))?;
-    if value < 0.0 || value > 1.0 {
+    if !(0.0..=1.0).contains(&value) {
         Err(anyhow!(
             "The value must be between 0.0 and 1.0, got: {}",
             value
@@ -197,10 +265,75 @@ fn parse_quantile(s: &str) -> Result<f64> {
     }
 }
 
+/// Checks if the provided file path exists.
+///
+/// Validates that the file path provided as an argument exists in the file system.
+/// It is used to ensure that the file paths provided for input files are valid before attempting to process them.
+///
+/// # Arguments
+///
+/// * `s` - A string slice representing the file path to check.
+///
+/// # Returns
+///
+/// Returns a `Result<PathBuf>` which is Ok if the file exists, or an Err with a descriptive message if not.
 fn check_file_exists(s: &str) -> Result<PathBuf> {
     let path = Path::new(s);
     if !path.exists() {
         return Err(anyhow!("File does not exist: {}", path.display()));
     }
     Ok(path.to_path_buf())
+}
+
+/// Parses a string of comma-separated alignment scoring parameters into an `AlnScoring` struct.
+///
+/// # Arguments
+///
+/// * `s` - A string slice containing the scoring parameters in the format "mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2".
+///
+/// # Returns
+///
+/// Returns a `Result<AlnScoring>` which is Ok if the string is correctly formatted and contains valid values,
+/// or an Err with a descriptive message if the input is invalid.
+/// ```
+fn scoring_from_string(s: &str) -> Result<AlnScoring> {
+    const NUM_EXPECTED_VALUES: usize = 5;
+    let values: Vec<i32> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+    if values.len() != NUM_EXPECTED_VALUES {
+        return Err(anyhow!(
+            "Expected {} comma-separated integers values in scoring. Got {} -> {}",
+            NUM_EXPECTED_VALUES,
+            values.len(),
+            s
+        ));
+    }
+
+    let (mismatch, gap_opening1, gap_extension1, gap_opening2, gap_extension2) =
+        (values[0], values[1], values[2], values[3], values[4]);
+
+    if mismatch <= 0
+        || gap_opening1 < 0
+        || gap_extension1 <= 0
+        || gap_opening2 < 0
+        || gap_extension2 <= 0
+    {
+        return Err(anyhow!(
+            "Invalid penalties. Got (mismatch={}, gap_opening1={}, gap_extension1={}, gap_opening2={},
+gap_extension2={}) -> (mismatch>0, gap_opening1>=0, gap_extension1>0, gap_opening2>=0,
+gap_extension2>0)",
+            mismatch,
+            gap_opening1,
+            gap_extension1,
+            gap_opening2,
+            gap_extension2
+        ));
+    }
+
+    Ok(AlnScoring {
+        mismatch,
+        gap_opening1,
+        gap_extension1,
+        gap_opening2,
+        gap_extension2,
+    })
 }

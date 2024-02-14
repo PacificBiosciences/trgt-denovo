@@ -17,3 +17,4 @@ Advanced:
 - `--flank-len <FLANK_LEN>` Number of flanking nucleotides added to a target region during realignment, default = 50
 - `--no-clip-aln` Score alignments without stripping the flanks
 - `--parental-quantile <QUANTILE>` Quantile of alignment scores to determine the parental threshold, default is strict and takes only the top scoring alignment, default = 1.0
+- `--aln-scoring` Scoring function for 2-piece gap affine alignment (non-negative values): mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2, default = "8,4,2,24,1", see [here](https://github.com/smarco/WFA2-lib/) for more details on parametrization 
