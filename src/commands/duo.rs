@@ -1,9 +1,13 @@
+// use crate::cli::DuoArgs;
+// use crate::util::Result;
+// use std::time::Instant;
+
 use crate::{
     aligner::{AlignmentScope, MemoryModel, WFAligner, WFAlignerGapAffine2Pieces},
-    cli::TrioArgs,
-    handles::TrioLocalData,
+    cli::DuoArgs,
+    duo::allele::{process_alleles, AlleleResult},
+    handles::DuoLocalData,
     locus::{self, Locus},
-    trio::allele::{self, AlleleResult},
     util::{AlnScoring, Params},
 };
 use anyhow::{anyhow, Result};
@@ -42,12 +46,12 @@ fn create_aligner_with_scoring() -> WFAligner {
 
 thread_local! {
     static ALIGNER: RefCell<WFAligner> = RefCell::new(create_aligner_with_scoring());
-    static LOCAL_FAMILY_DATA: RefCell<Option<TrioLocalData>> = RefCell::new(None);
+    static LOCAL_DUO_DATA: RefCell<Option<DuoLocalData>> = RefCell::new(None);
 }
 
-pub fn trio(args: TrioArgs) -> Result<()> {
+pub fn duo(args: DuoArgs) -> Result<()> {
     log::info!(
-        "{}-{} trio start",
+        "{}-{} duo start",
         env!("CARGO_PKG_NAME"),
         *crate::cli::FULL_VERSION
     );
@@ -74,7 +78,7 @@ pub fn trio(args: TrioArgs) -> Result<()> {
         fasta::indexed_reader::Builder::default().build_from_path(&args.reference_filename)?;
 
     // Check if BAM/VCF files can be opened (index validity), better to do it here before spawning threads
-    TrioLocalData::new(&args.mother_prefix, &args.father_prefix, &args.child_prefix)?;
+    DuoLocalData::new(&args.a_prefix, &args.b_prefix)?;
 
     match args.trid {
         Some(ref trid) => {
@@ -173,26 +177,22 @@ fn process_writer_thread<T: Write + Send + 'static>(
 
 fn process_locus(
     locus: &Locus,
-    args: &TrioArgs,
+    args: &DuoArgs,
     params_arc: &Arc<Params>,
     sender_result: &Sender<Vec<AlleleResult>>,
 ) {
     ALIGNER.with(|aligner| {
-        LOCAL_FAMILY_DATA.with(|local_family_data| {
-            let mut family_data = local_family_data.borrow_mut();
-            if family_data.is_none() {
-                *family_data = Some(
-                    TrioLocalData::new(
-                        &args.mother_prefix,
-                        &args.father_prefix,
-                        &args.child_prefix,
-                    )
-                    .expect("Failed to initialize FamilyLocalData"),
+        LOCAL_DUO_DATA.with(|local_family_data| {
+            let mut duo_data = local_family_data.borrow_mut();
+            if duo_data.is_none() {
+                *duo_data = Some(
+                    DuoLocalData::new(&args.a_prefix, &args.b_prefix)
+                        .expect("Failed to initialize DuoLocalData"),
                 );
             }
-            if let Ok(result) = allele::process_alleles(
+            if let Ok(result) = process_alleles(
                 locus,
-                family_data.as_mut().unwrap(),
+                duo_data.as_mut().unwrap(),
                 params_arc,
                 &mut aligner.borrow_mut(),
             ) {

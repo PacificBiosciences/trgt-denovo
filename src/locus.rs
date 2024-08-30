@@ -2,6 +2,7 @@
 //!
 use crate::util::Result;
 use anyhow::{anyhow, Context};
+use crossbeam_channel::Sender;
 use noodles::{
     bed,
     core::{Position, Region},
@@ -9,8 +10,9 @@ use noodles::{
 };
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{self, File},
     io::BufReader,
+    path::PathBuf,
 };
 
 /// Represents a genomic locus with its associated information.
@@ -168,7 +170,7 @@ pub fn get_locus(
     let query = format!("ID={tr_id};");
     for (line_number, result) in catalog_reader.records::<3>().enumerate() {
         let line = result.with_context(|| format!("Error reading BED line {}", line_number + 1))?;
-        if line.optional_fields().get(0).unwrap().contains(&query) {
+        if line.optional_fields().first().unwrap().contains(&query) {
             return Locus::new(genome_reader, &chrom_lookup, &line, flank_len)
                 .with_context(|| format!("Error processing BED line {}", line_number + 1));
         }
@@ -213,6 +215,49 @@ pub fn get_loci<'a>(
                         .with_context(|| format!("Error processing BED line {}", line_number + 1))
                 })
         })
+}
+
+pub fn stream_loci_into_channel(
+    bed_filename: PathBuf,
+    reference_filename: PathBuf,
+    flank_len: usize,
+    sender: Sender<Result<Locus>>,
+) {
+    let mut catalog_reader: bed::Reader<BufReader<File>> = fs::File::open(bed_filename.clone())
+        .map(BufReader::new)
+        .map(bed::Reader::new)
+        .unwrap();
+
+    let mut genome_reader = fasta::indexed_reader::Builder::default()
+        .build_from_path(&reference_filename)
+        .unwrap();
+
+    let chrom_lookup = HashSet::from_iter(
+        genome_reader
+            .index()
+            .iter()
+            .map(|entry| entry.name().to_string()),
+    );
+
+    for (line_number, result_line) in catalog_reader.records::<3>().enumerate() {
+        let line = match result_line {
+            Ok(line) => line,
+            Err(err) => {
+                let error = anyhow!(err).context(format!("Error at BED line {}", line_number + 1));
+                sender
+                    .send(Err(error))
+                    .expect("Failed to send error through channel");
+                continue;
+            }
+        };
+
+        let locus = Locus::new(&mut genome_reader, &chrom_lookup, &line, flank_len)
+            .with_context(|| format!("Error processing BED line {}", line_number + 1));
+
+        sender
+            .send(locus)
+            .expect("Failed to send locus through channel");
+    }
 }
 
 /// Retrieves a flank sequence from the genome given a region and start/end positions.

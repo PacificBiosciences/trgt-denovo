@@ -112,7 +112,7 @@ impl TrinaryMatrix {
 
         let mut offsets: [FamilyOffsets; 3] = std::iter::repeat_with(FamilyOffsets::default)
             .take(3)
-            .collect::<Vec<_>>()
+            .collect::<Vec<FamilyOffsets>>()
             .try_into()
             .unwrap_or_else(|_| unreachable!());
 

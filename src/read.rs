@@ -25,6 +25,8 @@ pub struct ReadInfo {
     pub end_offset: Option<i32>,
     /// A list of offsets where SNPs occur between the original HiFi read and the reference relative to the locus start and end positions.
     pub mismatch_offsets: Option<Vec<i32>>,
+    /// Read alignment start position
+    pub pos: usize,
 }
 
 // Define custom tags for lookup in TRGT BAMlets
@@ -92,6 +94,7 @@ impl ReadInfo {
             start_offset,
             end_offset,
             mismatch_offsets,
+            pos: record.alignment_start().unwrap().get(),
         }
     }
 }
@@ -111,6 +114,8 @@ pub struct ReadInfoBuilder {
     end_offset: Option<i32>,
     /// A list of offsets where SNPs occur between the original HiFi read and the reference relative to the locus start and end positions.
     mismatch_offsets: Option<Vec<i32>>,
+    /// Alignment start position
+    pos: usize,
 }
 
 /// Provides an interface for building `ReadInfo` instances.
@@ -128,6 +133,7 @@ impl ReadInfoBuilder {
             start_offset: Some(0),
             end_offset: Some(0),
             mismatch_offsets: Some(vec![0, 0, 0, 0, 0]),
+            pos: 0,
         }
     }
 
@@ -215,6 +221,11 @@ impl ReadInfoBuilder {
         self
     }
 
+    pub fn with_pos(mut self, pos: usize) -> Self {
+        self.pos = pos;
+        self
+    }
+
     /// Builds a `ReadInfo` instance from the builder.
     ///
     /// # Returns
@@ -228,6 +239,7 @@ impl ReadInfoBuilder {
             start_offset: self.start_offset,
             end_offset: self.end_offset,
             mismatch_offsets: self.mismatch_offsets,
+            pos: self.pos,
         })
     }
 }
@@ -246,6 +258,7 @@ impl Default for ReadInfoBuilder {
             start_offset: None,
             end_offset: None,
             mismatch_offsets: None,
+            pos: 0,
         }
     }
 }

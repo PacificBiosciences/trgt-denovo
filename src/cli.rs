@@ -1,3 +1,4 @@
+use crate::util::QuickMode;
 use crate::util::{AlnScoring, Result};
 use anyhow::anyhow;
 use chrono::Datelike;
@@ -5,6 +6,7 @@ use clap::{ArgAction, ArgGroup, Parser, Subcommand};
 use env_logger::fmt::Color;
 use log::{Level, LevelFilter};
 use once_cell::sync::Lazy;
+use std::ops::Deref;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -18,14 +20,15 @@ use std::{
 /// * `0.1.0-1ba958a-dirty` - while on a dirty branch
 /// * `0.1.0-1ba958a` - with a fresh commit
 pub static FULL_VERSION: Lazy<String> = Lazy::new(|| {
-    format!(
-        "{}-{}",
-        env!("CARGO_PKG_VERSION"),
-        env!("VERGEN_GIT_DESCRIBE")
-    )
+    let git_describe = env!("VERGEN_GIT_DESCRIBE");
+    if git_describe.is_empty() {
+        env!("CARGO_PKG_VERSION").to_string()
+    } else {
+        format!("{}-{}", env!("CARGO_PKG_VERSION"), git_describe)
+    }
 });
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
 #[command(name="trgt-denovo",
           author="Tom Mokveld <tmokveld@pacificbiosciences.com>\nEgor Dolzhenko <edolzhenko@pacificbiosciences.com>", 
           version=&**FULL_VERSION,
@@ -46,15 +49,8 @@ pub struct Cli {
     pub verbosity: u8,
 }
 
-#[derive(Subcommand)]
-pub enum Command {
-    Trio(TrioArgs),
-}
-
-#[derive(Parser, Debug)]
-#[command(group(ArgGroup::new("trio")))]
-#[command(arg_required_else_help(true))]
-pub struct TrioArgs {
+#[derive(Parser, Debug, Clone)]
+pub struct SharedArgs {
     #[clap(required = true)]
     #[clap(short = 'r')]
     #[clap(long = "reference")]
@@ -72,35 +68,10 @@ pub struct TrioArgs {
     pub bed_filename: PathBuf,
 
     #[clap(required = true)]
-    #[clap(short = 'm')]
-    #[clap(long = "mother")]
-    #[clap(help = "Prefix of mother VCF and spanning reads BAM files")]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
-    pub mother_prefix: String,
-
-    #[clap(required = true)]
-    #[clap(short = 'f')]
-    #[clap(long = "father")]
-    #[clap(help = "Prefix of father VCF and spanning reads BAM files")]
-    #[arg(value_parser = check_prefix_path)]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
-    pub father_prefix: String,
-
-    #[clap(required = true)]
-    #[clap(short = 'c')]
-    #[clap(long = "child")]
-    #[clap(help = "Prefix of child VCF and spanning reads BAM files")]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
-    pub child_prefix: String,
-
-    #[clap(required = true)]
     #[clap(short = 'o')]
     #[clap(long = "out")]
-    #[clap(help = "Output csv path")]
-    #[clap(value_name = "CSV")]
+    #[clap(help = "Output tsv path")]
+    #[clap(value_name = "TSV")]
     #[arg(value_parser = check_prefix_path)]
     pub output_path: String,
 
@@ -129,14 +100,12 @@ pub struct TrioArgs {
     pub no_clip_aln: bool,
 
     #[clap(help_heading("Advanced"))]
-    #[clap(long = "parental-quantile")]
-    #[clap(
-        help = "Quantile of alignments scores to determine the parental threshold (default is strict and takes only the top score)"
-    )]
+    #[clap(long = "p-quantile")]
+    #[clap(help = "Quantile of alignments scores to determine the threshold")]
     #[clap(value_name = "QUANTILE")]
     #[clap(default_value = "1.0")]
     #[arg(value_parser = parse_quantile)]
-    pub parent_quantile: f64,
+    pub p_quantile: f64,
 
     #[clap(help_heading("Advanced"))]
     #[clap(long = "aln-scoring")]
@@ -150,9 +119,98 @@ pub struct TrioArgs {
 
     #[clap(help_heading("Advanced"))]
     #[clap(long = "partition-by-aln")]
-    #[clap(help = "Within-sample partitioning using alignment rather than the TRGT AL field")]
+    #[clap(
+        help = "Within-sample partitioning using alignment rather than the TRGT BAMlet AL field"
+    )]
     #[clap(value_name = "ALN")]
     pub partition_by_alignment: bool,
+
+    #[clap(help_heading("Advanced"))]
+    #[clap(long = "quick")]
+    #[clap(
+        help = "Only test loci that differ by a certain fraction in allele length. Format: <field>,<fraction> (e.g. AL,0.1 or AL)"
+    )]
+    #[clap(value_parser = parse_quick_option)]
+    pub quick: Option<QuickMode>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    Trio(TrioArgs),
+    Duo(DuoArgs),
+}
+
+impl Deref for TrioArgs {
+    type Target = SharedArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+impl Deref for DuoArgs {
+    type Target = SharedArgs;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+#[derive(Parser, Debug, Clone)]
+#[command(group(ArgGroup::new("trio")))]
+#[command(arg_required_else_help(true))]
+pub struct TrioArgs {
+    #[command(flatten)]
+    pub shared: SharedArgs,
+
+    #[clap(required = true)]
+    #[clap(short = 'm')]
+    #[clap(long = "mother")]
+    #[clap(help = "Prefix of mother VCF and spanning reads BAM files")]
+    #[clap(value_name = "PREFIX")]
+    #[arg(value_parser = check_prefix_path)]
+    pub mother_prefix: String,
+
+    #[clap(required = true)]
+    #[clap(short = 'f')]
+    #[clap(long = "father")]
+    #[clap(help = "Prefix of father VCF and spanning reads BAM files")]
+    #[arg(value_parser = check_prefix_path)]
+    #[clap(value_name = "PREFIX")]
+    #[arg(value_parser = check_prefix_path)]
+    pub father_prefix: String,
+
+    #[clap(required = true)]
+    #[clap(short = 'c')]
+    #[clap(long = "child")]
+    #[clap(help = "Prefix of child VCF and spanning reads BAM files")]
+    #[clap(value_name = "PREFIX")]
+    #[arg(value_parser = check_prefix_path)]
+    pub child_prefix: String,
+}
+
+#[derive(Parser, Debug, Clone)]
+#[command(group(ArgGroup::new("duo")))]
+#[command(arg_required_else_help(true))]
+pub struct DuoArgs {
+    #[command(flatten)]
+    pub shared: SharedArgs,
+
+    #[clap(required = true)]
+    #[clap(short = 'a')]
+    #[clap(long = "sample-a")]
+    #[clap(help = "Prefix of first sample VCF and spanning reads BAM files")]
+    #[clap(value_name = "PREFIX")]
+    #[arg(value_parser = check_prefix_path)]
+    pub a_prefix: String,
+
+    #[clap(required = true)]
+    #[clap(short = 'b')]
+    #[clap(long = "sample-b")]
+    #[clap(help = "Prefix of second sample VCF and spanning reads BAM files")]
+    #[clap(value_name = "PREFIX")]
+    #[arg(value_parser = check_prefix_path)]
+    pub b_prefix: String,
 }
 
 /// Initializes the verbosity level for logging based on the command-line arguments.
@@ -336,4 +394,35 @@ gap_extension2>0)",
         gap_opening2,
         gap_extension2,
     })
+}
+
+fn parse_quick_option(s: &str) -> Result<QuickMode> {
+    let parts: Vec<&str> = s.split(',').collect();
+
+    let (field, fraction) = match parts.len() {
+        1 => (parts[0].to_uppercase(), None),
+        2 => {
+            let frac = parts[1]
+                .parse()
+                .map_err(|_| anyhow!("Invalid fraction value"))?;
+            if !(0.0..=1.0).contains(&frac) {
+                return Err(anyhow!("Fraction must be between 0.0 and 1.0"));
+            }
+            (
+                parts[0].to_uppercase(),
+                if frac == 0.0 { None } else { Some(frac) },
+            )
+        }
+        _ => {
+            return Err(anyhow!(
+                "Invalid quick option format. Expected <field> or <field>,<fraction>"
+            ))
+        }
+    };
+
+    match field.as_str() {
+        "AL" => Ok(QuickMode::AL(fraction)),
+        // "MC" => Ok(QuickMode::MC(fraction)),
+        _ => Err(anyhow!("Invalid field for quick option. Must be AL")),
+    }
 }

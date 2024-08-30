@@ -1,4 +1,5 @@
 use crate::wfa2;
+use core::slice;
 use serde::{Deserialize, Serialize};
 use std::ptr;
 
@@ -434,6 +435,18 @@ impl WFAligner {
         cstr
     }
 
+    pub fn cigar_wfa(&self) -> Vec<u8> {
+        let cigar_str = unsafe {
+            let begin_offset = (*(*self.inner).cigar).begin_offset;
+            let cigar_operations = (*(*self.inner).cigar)
+                .operations
+                .offset(begin_offset as isize) as *const u8;
+            let cigar_length = ((*(*self.inner).cigar).end_offset - begin_offset) as usize;
+            slice::from_raw_parts(cigar_operations, cigar_length)
+        };
+        cigar_str.to_vec()
+    }
+
     pub fn matching(
         &self,
         pattern: &[u8],
@@ -697,6 +710,7 @@ impl WFAlignerGapAffine {
 pub struct WFAlignerGapAffine2Pieces;
 
 impl WFAlignerGapAffine2Pieces {
+    #[allow(clippy::too_many_arguments)]
     pub fn create_aligner_with_match(
         match_: i32,
         mismatch: i32,

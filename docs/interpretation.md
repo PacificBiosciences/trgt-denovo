@@ -32,7 +32,7 @@ The distributions of the TRGT-denovo *de novo* coverage metric in coverage-balan
 
 Below TRGT-denovo output of HG002 is shown for two candidate *de novo* tandem repeat mutation sites:
 ```
-trid	genotype	denovo_coverage	allele_coverage	allele_ratio	child_coverage	child_ratio	mean_diff_father	mean_diff_mother	father_dropout_prob	mother_dropout_prob	allele_origin	denovo_status	per_allele_reads_father	per_allele_reads_mother	per_allele_reads_child	index	father_motif_counts	mother_motif_counts	child_motif_counts
+trid	genotype	denovo_coverage	allele_coverage	allele_ratio	child_coverage	child_ratio	mean_diff_father	mean_diff_mother	father_dropout_prob	mother_dropout_prob	allele_origin	denovo_status	per_allele_reads_father	per_allele_reads_mother	per_allele_reads_child	index	father_MC	mother_MC	child_MC
 chr1_47268728_47268830_ATAA	1	19	37	0.5135	37	0.5135	6.7368	6.7368	0.0000	0.0000	M:1	Y:=	43	26	37	0	25	25	25
 chr1_7862944_7863157_TATTG	1	0	21	0.0000	37	0.0000	0.0000	19.2000	0.0000	0.0000	F:2	X	18,17	16,19	21,16	0	27,29	27,63	29,60
 chr1_7862944_7863157_TATTG	2	16	16	1.0000	37	0.4324	171.8750	22.8750	0.0000	0.0000	M:2	Y:-	18,17	16,19	21,16	1	27,29	27,63	29,60

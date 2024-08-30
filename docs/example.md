@@ -11,9 +11,6 @@ A brief overview of the steps needed to call *de novo* tandem repeat mutations u
 - Aligned HiFi data of a family trio (father, mother, and child)
 - The reference genome used for read alignment
 
-
-
-
 ## Calling *de novo* tandem repeat mutations
 
 Given the following data: 
@@ -76,7 +73,7 @@ With all preprocessing completed, we can call *de novo* repeat expansion mutatio
               --father sample_F \
               --mother sample_M \
               --child sample_S \
-              --out out.csv
+              --out out.tsv
 ```
 
-For further interpretation of TRGT-denovo output see [here](interpretation.md)
+For further interpretation of TRGT-denovo output see [here](interpretation.md), additionally scripts/python/trio_analysis.ipynb shows an example of doing basic analysis given TRGT-denovo trio output to select candidate *de novo* calls.
