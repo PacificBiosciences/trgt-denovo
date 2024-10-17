@@ -4,7 +4,7 @@ use crate::denovo::{
     align_allele, align_alleleset, get_overlap_coverage, get_score_count_diff, get_top_other_score,
 };
 use crate::math;
-use crate::util::Params;
+use crate::util::{DenovoStatus, DenovoType, Params};
 
 /// Represents a de novo allele event with associated scoring and classification information.
 #[derive(Debug)]
@@ -19,6 +19,8 @@ pub struct DenovoAllele {
     pub allele_coverage: usize,
     /// Average difference in alignment scores compared to B alleles.
     pub mean_diff_b: f32,
+    /// Status indicating whether the allele is de novo and its type.
+    pub denovo_status: DenovoStatus,
     /// Index used to identify the allele.
     pub index: usize,
     /// The number of B reads per allele that overlap with the A allele
@@ -59,11 +61,17 @@ pub fn assess_denovo<'a>(
         let child_score_threshold = math::median(&a_align_scores).unwrap_or(f64::MAX);
         let b_overlap_coverage = get_overlap_coverage(child_score_threshold, &b_align_scores);
 
+        let denovo_status = match denovo_coverage {
+            0 => DenovoStatus::NotDenovo,
+            _ => DenovoStatus::Denovo(DenovoType::Unclear),
+        };
+
         dnrs.push(DenovoAllele {
             genotype: denovo_allele.genotype,
             denovo_coverage,
             a_coverage: a_gts.iter().map(|vec| vec.read_aligns.len()).sum(),
             allele_coverage: denovo_allele.read_aligns.len(),
+            denovo_status,
             mean_diff_b,
             index: denovo_allele.index,
             b_overlap_coverage,

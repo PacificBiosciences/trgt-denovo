@@ -43,6 +43,10 @@ We make no warranty that any such issue will be addressed, to any extent or with
 
 ## Changelog
 
+- 0.2.1
+  - Duo and trio mode now always output entries regardless of error status (e.g., missing genotyping, skip because of quick mode).
+  - Add `denovo_status` analog to duo mode.
+
 - 0.2.0
   - Implemented duo mode, it is now possible to perform 1-to-1 sample comparisons, following the same principles as in trio analysis. This can be done using the subcommand `trgt-denovo duo`.
   - Implemented the `--quick` flag. Users can now specify `--quick AL[,<fraction>]` to skip loci where allele lengths are similar between parents and child or between two samples. If no fraction is specified (or fraction is 0), it checks for exact matches. If a fraction is specified, it checks if the relative difference is within the given tolerance.

@@ -15,13 +15,12 @@ use crate::{
     math,
     util::{AlleleOrigin, DenovoStatus, Params, QuickMode, Result},
 };
-use anyhow::anyhow;
 use itertools::Itertools;
 use serde::Serialize;
 use std::{cmp::max, collections::HashSet};
 
 /// Represents the result of allele processing, including various statistics and classifications.
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Clone)]
 #[allow(non_snake_case)]
 pub struct AlleleResult {
     pub trid: String,
@@ -198,10 +197,89 @@ pub fn process_alleles(
     params: &Params,
     aligner: &mut WFAligner,
 ) -> Result<Vec<AlleleResult>> {
-    let father_alleles = load_alleles_handle('F', locus, &mut handle.father, params, aligner)?;
-    let mother_alleles = load_alleles_handle('M', locus, &mut handle.mother, params, aligner)?;
-    let child_alleles = load_alleles_handle('C', locus, &mut handle.child, params, aligner)?;
+    let mut template_result = AlleleResult {
+        trid: locus.id.clone(),
+        genotype: 0,
+        denovo_coverage: 0,
+        allele_coverage: 0,
+        allele_ratio: 0.0,
+        child_coverage: 0,
+        child_ratio: 0.0,
+        mean_diff_father: 0.0,
+        mean_diff_mother: 0.0,
+        father_dropout_prob: 0.0,
+        mother_dropout_prob: 0.0,
+        allele_origin: AlleleOrigin::Unknown,
+        denovo_status: DenovoStatus::Unknown,
+        per_allele_reads_father: ".".to_string(),
+        per_allele_reads_mother: ".".to_string(),
+        per_allele_reads_child: ".".to_string(),
+        father_dropout: ".".to_string(),
+        mother_dropout: ".".to_string(),
+        child_dropout: ".".to_string(),
+        index: 0,
+        father_MC: ".".to_string(),
+        mother_MC: ".".to_string(),
+        child_MC: ".".to_string(),
+        father_AL: ".".to_string(),
+        mother_AL: ".".to_string(),
+        child_AL: ".".to_string(),
+        father_overlap_coverage: ".".to_string(),
+        mother_overlap_coverage: ".".to_string(),
+    };
 
+    let father_alleles = load_alleles_handle('F', locus, &mut handle.father, params, aligner);
+    let mother_alleles = load_alleles_handle('M', locus, &mut handle.mother, params, aligner);
+    let child_alleles = load_alleles_handle('C', locus, &mut handle.child, params, aligner);
+
+    if let Ok(ref alleles) = father_alleles {
+        template_result.father_dropout = alleles
+            .get_naive_dropout(locus, &handle.father.karyotype)
+            .to_string();
+        template_result.father_dropout_prob = math::get_dropout_prob(alleles);
+        template_result.per_allele_reads_father = math::get_per_allele_reads(alleles)
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        template_result.father_MC = join_allele_attribute(alleles, |a| &a.motif_count);
+        template_result.father_AL = join_allele_attribute(alleles, |a| &a.allele_length);
+    }
+    if let Ok(ref alleles) = mother_alleles {
+        template_result.mother_dropout = alleles
+            .get_naive_dropout(locus, &handle.mother.karyotype)
+            .to_string();
+        template_result.mother_dropout_prob = math::get_dropout_prob(alleles);
+        template_result.per_allele_reads_mother = math::get_per_allele_reads(alleles)
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        template_result.mother_MC = join_allele_attribute(alleles, |a| &a.motif_count);
+        template_result.mother_AL = join_allele_attribute(alleles, |a| &a.allele_length);
+    }
+    if let Ok(ref alleles) = child_alleles {
+        template_result.child_dropout = alleles
+            .get_naive_dropout(locus, &handle.child.karyotype)
+            .to_string();
+        template_result.per_allele_reads_child = math::get_per_allele_reads(alleles)
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        template_result.child_MC = join_allele_attribute(alleles, |a| &a.motif_count);
+        template_result.child_AL = join_allele_attribute(alleles, |a| &a.allele_length);
+    }
+
+    if father_alleles.is_err() || mother_alleles.is_err() || child_alleles.is_err() {
+        return Ok(vec![template_result]);
+    }
+
+    let father_alleles = father_alleles.unwrap();
+    let mother_alleles = mother_alleles.unwrap();
+    let child_alleles = child_alleles.unwrap();
+
+    // Quick mode check
     if let Some(quick_mode) = &params.quick_mode {
         let should_skip = if quick_mode.is_zero() {
             check_field_equivalence(&father_alleles, &mother_alleles, &child_alleles, quick_mode)
@@ -210,43 +288,9 @@ pub fn process_alleles(
         };
 
         if should_skip {
-            return Err(anyhow!("No significant difference at locus: {}", locus.id));
+            return Ok(vec![template_result]);
         }
     }
-
-    // TODO: ongoing work
-    // let matrix = TrinaryMatrix::new(&child_alleles, &father_alleles, &mother_alleles).unwrap();
-    // let max_lhs = TrinaryMatrix::new(&child_alleles, &father_alleles, &mother_alleles)
-    //     .and_then(|trinary_mat| snp::inheritance_prob(&trinary_mat))
-    //     .map(|(_inherit_p, max_lh)| max_lh)
-    //     .unwrap_or((-1.0, -1.0));
-    // let max_lhs = [max_lhs.0, max_lhs.1];
-
-    let mother_dropout_prob = math::get_dropout_prob(&mother_alleles);
-    let father_dropout_prob = math::get_dropout_prob(&father_alleles);
-
-    let father_reads = math::get_per_allele_reads(&father_alleles)
-        .iter()
-        .map(|a| a.to_string())
-        .collect::<Vec<String>>()
-        .join(",");
-    let mother_reads = math::get_per_allele_reads(&mother_alleles)
-        .iter()
-        .map(|a| a.to_string())
-        .collect::<Vec<String>>()
-        .join(",");
-    let child_reads = math::get_per_allele_reads(&child_alleles)
-        .iter()
-        .map(|a| a.to_string())
-        .collect::<Vec<String>>()
-        .join(",");
-
-    let father_mc = join_allele_attribute(&father_alleles, |a| &a.motif_count);
-    let mother_mc = join_allele_attribute(&mother_alleles, |a| &a.motif_count);
-    let child_mc = join_allele_attribute(&child_alleles, |a| &a.motif_count);
-    let father_al = join_allele_attribute(&father_alleles, |a| &a.allele_length);
-    let mother_al = join_allele_attribute(&mother_alleles, |a| &a.allele_length);
-    let child_al = join_allele_attribute(&child_alleles, |a| &a.allele_length);
 
     let mut out_vec = Vec::new();
     for dna in denovo::assess_denovo(
@@ -256,59 +300,41 @@ pub fn process_alleles(
         params,
         aligner,
     ) {
-        let allele_ratio = if dna.allele_coverage == 0 {
+        let mut result = template_result.clone();
+        result.genotype = dna.genotype;
+        result.denovo_coverage = dna.denovo_coverage;
+        result.allele_coverage = dna.allele_coverage;
+        result.allele_ratio = if dna.allele_coverage == 0 {
             0.0
         } else {
             dna.denovo_coverage as f64 / dna.allele_coverage as f64
         };
-        let output = AlleleResult {
-            trid: locus.id.clone(),
-            genotype: dna.genotype,
-            denovo_coverage: dna.denovo_coverage,
-            allele_coverage: dna.allele_coverage,
-            allele_ratio,
-            child_coverage: dna.child_coverage,
-            child_ratio: dna.denovo_coverage as f64 / dna.child_coverage as f64,
-            mean_diff_father: dna.mean_diff_father,
-            mean_diff_mother: dna.mean_diff_mother,
-            father_dropout_prob,
-            mother_dropout_prob,
-            allele_origin: dna.allele_origin,
-            denovo_status: dna.denovo_status,
-            per_allele_reads_father: father_reads.to_owned(),
-            per_allele_reads_mother: mother_reads.to_owned(),
-            per_allele_reads_child: child_reads.to_owned(),
-            father_dropout: father_alleles
-                .get_naive_dropout(locus, &handle.father.karyotype)
-                .to_string(),
-            mother_dropout: mother_alleles
-                .get_naive_dropout(locus, &handle.mother.karyotype)
-                .to_string(),
-            child_dropout: child_alleles
-                .get_naive_dropout(locus, &handle.child.karyotype)
-                .to_string(),
-            index: dna.index,
-            father_MC: father_mc.to_owned(),
-            mother_MC: mother_mc.to_owned(),
-            child_MC: child_mc.to_owned(),
-            father_AL: father_al.to_owned(),
-            mother_AL: mother_al.to_owned(),
-            child_AL: child_al.to_owned(),
-            father_overlap_coverage: dna
-                .father_overlap_coverage
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<String>>()
-                .join(","),
-            mother_overlap_coverage: dna
-                .mother_overlap_coverage
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<String>>()
-                .join(","),
-        };
-        out_vec.push(output);
+        result.child_coverage = dna.child_coverage;
+        result.child_ratio = dna.denovo_coverage as f64 / dna.child_coverage as f64;
+        result.mean_diff_father = dna.mean_diff_father;
+        result.mean_diff_mother = dna.mean_diff_mother;
+        result.allele_origin = dna.allele_origin;
+        result.denovo_status = dna.denovo_status;
+        result.index = dna.index;
+        result.father_overlap_coverage = dna
+            .father_overlap_coverage
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        result.mother_overlap_coverage = dna
+            .mother_overlap_coverage
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        out_vec.push(result);
     }
+
+    if out_vec.is_empty() {
+        out_vec.push(template_result);
+    }
+
     Ok(out_vec)
 }
 

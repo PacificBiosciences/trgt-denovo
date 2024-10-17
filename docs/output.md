@@ -1,5 +1,7 @@
 # Interpreting TRGT-denovo output
 
+Missing values are denoted by: `.`, indicating that a given locus has a missing genotype in at least one sample, or a locus is skipped because of quick mode.
+
 Trio fields:
 
 - `trid` ID of the tandem repeat, encoded as in the BED file
@@ -14,7 +16,7 @@ Trio fields:
 - `father_dropout_prob` Dropout rate for reads coming from the mother
 - `mother_dropout_prob` Dropout rate for reads coming from the father.
 - `allele_origin` Inferred origin of the allele based on alignment; possible values: `{F:{1,2,?}, M:{1,2,?}, ?}`. `F` and `M` denote father and mother respectively. The associated `{1, 2, ?}` values denote the first or second allele from either parent or `?` when this cannot be derived unambiguously. Lastly a `?` denotes an allele for which parental origin cannot be determined unambiguously
-- `denovo_status` Indicates if the allele is *de novo*, only if `allele_origin` is defined; possible values: `{X, Y:{+, -, =}}`. This is `X` if no *de novo* read is found and `Y` otherwise, if parental origin can be determined without ambiguity the allele sequences can be compared directly such that the *de novo* type can be established as `+` (expansion), `-` (contraction), or `=` (substitution)
+- `denovo_status` Indicates if the allele is *de novo*, only if `allele_origin` is defined; possible values: `{., X, Y:{+, -, =, ?}}`. This is `.` if there is a missing value, `X` if no *de novo* read is found and `Y` otherwise, if parental origin can be determined without ambiguity the allele sequences can be compared directly such that the *de novo* type can be established as `+` (expansion), `-` (contraction), `=` (substitution), `?` if `allele_origin` is not defined
 - `per_allele_reads_father` Number of reads partitioned per allele in the father (allele1, allele2)
 - `per_allele_reads_mother` Number of reads partitioned per allele in the mother (allele1, allele2)
 - `per_allele_reads_child` Number of reads partitioned per allele in the child (allele1, allele2)
@@ -41,6 +43,7 @@ Duo fields:
 - `a_coverage` Total number of sample A reads at this site
 - `a_ratio` Ratio of *de novo* coverage to total coverage at this site
 - `mean_diff_b` Score difference between *de novo* and sample B reads; lower values indicate greater similarity
+- `denovo_status` Attempts to say if the allele is *de novo*; possible values: `{., X, Y:{?}}`. This is `.` if there is a missing value, `X` if not a single *de novo* read is found and `Y:?` otherwise.
 - `per_allele_reads_a` Number of reads partitioned per allele in sample A (allele1, allele2)
 - `per_allele_reads_b` Number of reads partitioned per allele in sample B (allele1, allele2)
 - `a_dropout` Coverage cut-off dropout detection using HP tags from phasing tools in sample A; possible values: Full dropout (`FD`), Haplotype dropout (`HD`), Not (`N`) 

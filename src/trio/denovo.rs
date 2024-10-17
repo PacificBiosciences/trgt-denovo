@@ -131,7 +131,7 @@ pub fn assess_denovo<'a>(
             father_overlap_coverage,
         });
     }
-    log::trace!("Mean matrix={:?}", matrix);
+    // log::trace!("Mean matrix={:?}", matrix);
 
     // For each valid allele inheritance pattern calculate the scores
     let mut combs_score: Vec<(f64, [(usize, usize); 2])> = Vec::new();
@@ -148,7 +148,7 @@ pub fn assess_denovo<'a>(
     combs_score.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
     // Absolute difference between top two assignments
     let comb_diff = (combs_score[0].0 - combs_score[1].0).abs();
-    log::trace!("comb_diff: {}", comb_diff);
+    // log::trace!("comb_diff: {}", comb_diff);
     // Update allele origin and de novo type
     let comb_0 = combs_score[0].1;
     for (index, denovo_allele) in child_gts.iter().enumerate() {

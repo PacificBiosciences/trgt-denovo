@@ -13,9 +13,8 @@ use crate::{
     handles::DuoLocalData,
     locus::Locus,
     math,
-    util::{Params, QuickMode, Result},
+    util::{DenovoStatus, Params, QuickMode, Result},
 };
-use anyhow::anyhow;
 use serde::Serialize;
 use std::{cmp::Ordering, collections::HashSet};
 
@@ -86,7 +85,7 @@ fn check_field_similarity(
         .all(|(&a, &b)| is_similar(a, b, tolerance))
 }
 
-#[derive(Debug, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Serialize, Clone)]
 #[allow(non_snake_case)]
 pub struct AlleleResult {
     pub trid: String,
@@ -100,6 +99,8 @@ pub struct AlleleResult {
     pub a_ratio: f64,
     #[serde(serialize_with = "serialize_with_precision")]
     pub mean_diff_b: f32,
+    #[serde(serialize_with = "serialize_as_display")]
+    pub denovo_status: DenovoStatus,
     #[serde(serialize_with = "serialize_as_display")]
     pub per_allele_reads_a: String,
     pub per_allele_reads_b: String,
@@ -119,9 +120,64 @@ pub fn process_alleles(
     params: &Params,
     aligner: &mut WFAligner,
 ) -> Result<Vec<AlleleResult>> {
-    let a_alleles = load_alleles_handle('A', locus, &mut handle.sample1, params, aligner)?;
-    let b_alleles = load_alleles_handle('B', locus, &mut handle.sample2, params, aligner)?;
+    let mut template_result = AlleleResult {
+        trid: locus.id.clone(),
+        genotype: 0,
+        denovo_coverage: 0,
+        allele_coverage: 0,
+        allele_ratio: 0.0,
+        a_coverage: 0,
+        a_ratio: 0.0,
+        mean_diff_b: 0.0,
+        denovo_status: DenovoStatus::Unknown,
+        per_allele_reads_a: ".".to_string(),
+        per_allele_reads_b: ".".to_string(),
+        a_dropout: ".".to_string(),
+        b_dropout: ".".to_string(),
+        index: 0,
+        a_MC: ".".to_string(),
+        b_MC: ".".to_string(),
+        a_AL: ".".to_string(),
+        b_AL: ".".to_string(),
+        b_overlap_coverage: ".".to_string(),
+    };
 
+    let a_alleles = load_alleles_handle('A', locus, &mut handle.sample1, params, aligner);
+    let b_alleles = load_alleles_handle('B', locus, &mut handle.sample2, params, aligner);
+
+    if let Ok(ref alleles) = a_alleles {
+        template_result.a_dropout = alleles
+            .get_naive_dropout(locus, &handle.sample1.karyotype)
+            .to_string();
+        template_result.per_allele_reads_a = math::get_per_allele_reads(alleles)
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        template_result.a_MC = join_allele_attribute(alleles, |a| &a.motif_count);
+        template_result.a_AL = join_allele_attribute(alleles, |a| &a.allele_length);
+    }
+    if let Ok(ref alleles) = b_alleles {
+        template_result.b_dropout = alleles
+            .get_naive_dropout(locus, &handle.sample2.karyotype)
+            .to_string();
+        template_result.per_allele_reads_b = math::get_per_allele_reads(alleles)
+            .iter()
+            .map(|a| a.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        template_result.b_MC = join_allele_attribute(alleles, |a| &a.motif_count);
+        template_result.b_AL = join_allele_attribute(alleles, |a| &a.allele_length);
+    }
+
+    if a_alleles.is_err() || b_alleles.is_err() {
+        return Ok(vec![template_result]);
+    }
+
+    let a_alleles = a_alleles.unwrap();
+    let b_alleles = b_alleles.unwrap();
+
+    // Quick mode check
     if let Some(quick_mode) = &params.quick_mode {
         let should_skip = if quick_mode.is_zero() {
             check_allele_field_equivalence(&a_alleles, &b_alleles, quick_mode)
@@ -130,64 +186,39 @@ pub fn process_alleles(
         };
 
         if should_skip {
-            return Err(anyhow!("No significant difference at locus: {}", locus.id));
+            return Ok(vec![template_result]);
         }
     }
 
-    let a_reads = math::get_per_allele_reads(&a_alleles)
-        .iter()
-        .map(|a| a.to_string())
-        .collect::<Vec<String>>()
-        .join(",");
-    let b_reads = math::get_per_allele_reads(&b_alleles)
-        .iter()
-        .map(|a| a.to_string())
-        .collect::<Vec<String>>()
-        .join(",");
-
-    let a_mc = join_allele_attribute(&a_alleles, |a| &a.motif_count);
-    let b_mc = join_allele_attribute(&b_alleles, |a| &a.motif_count);
-    let a_al = join_allele_attribute(&a_alleles, |a| &a.allele_length);
-    let b_al = join_allele_attribute(&b_alleles, |a| &a.allele_length);
-
     let mut out_vec = Vec::new();
     for dna in denovo::assess_denovo(&a_alleles, &b_alleles, params, aligner) {
-        let allele_ratio = if dna.allele_coverage == 0 {
+        let mut result = template_result.clone();
+        result.genotype = dna.genotype;
+        result.denovo_coverage = dna.denovo_coverage;
+        result.allele_coverage = dna.allele_coverage;
+        result.allele_ratio = if dna.allele_coverage == 0 {
             0.0
         } else {
             dna.denovo_coverage as f64 / dna.allele_coverage as f64
         };
-        let output = AlleleResult {
-            trid: locus.id.clone(),
-            genotype: dna.genotype,
-            denovo_coverage: dna.denovo_coverage,
-            allele_coverage: dna.allele_coverage,
-            allele_ratio,
-            a_coverage: dna.a_coverage,
-            a_ratio: dna.denovo_coverage as f64 / dna.a_coverage as f64,
-            mean_diff_b: dna.mean_diff_b,
-            per_allele_reads_a: a_reads.to_owned(),
-            per_allele_reads_b: b_reads.to_owned(),
-            a_dropout: a_alleles
-                .get_naive_dropout(locus, &handle.sample1.karyotype)
-                .to_string(),
-            b_dropout: b_alleles
-                .get_naive_dropout(locus, &handle.sample2.karyotype)
-                .to_string(),
-            index: dna.index,
-            a_MC: a_mc.to_owned(),
-            b_MC: b_mc.to_owned(),
-            a_AL: a_al.to_owned(),
-            b_AL: b_al.to_owned(),
-            b_overlap_coverage: dna
-                .b_overlap_coverage
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<String>>()
-                .join(","),
-        };
-        out_vec.push(output);
+        result.a_coverage = dna.a_coverage;
+        result.a_ratio = dna.denovo_coverage as f64 / dna.a_coverage as f64;
+        result.mean_diff_b = dna.mean_diff_b;
+        result.index = dna.index;
+        result.denovo_status = dna.denovo_status;
+        result.b_overlap_coverage = dna
+            .b_overlap_coverage
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<String>>()
+            .join(",");
+        out_vec.push(result);
     }
+
+    if out_vec.is_empty() {
+        out_vec.push(template_result);
+    }
+
     Ok(out_vec)
 }
 

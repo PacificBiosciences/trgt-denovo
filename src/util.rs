@@ -88,9 +88,9 @@ pub enum DenovoType {
 /// Represents the status of a de novo event, indicating whether it is de novo and its type.
 #[derive(Debug, PartialEq, Clone, Serialize)]
 pub enum DenovoStatus {
-    /// Indicates a de novo event with a specified type.
     Denovo(DenovoType),
     NotDenovo,
+    Unknown,
 }
 
 impl std::fmt::Display for DenovoType {
@@ -109,6 +109,7 @@ impl std::fmt::Display for DenovoStatus {
         match self {
             DenovoStatus::Denovo(denovo_type) => write!(f, "Y:{}", denovo_type),
             DenovoStatus::NotDenovo => write!(f, "X"),
+            DenovoStatus::Unknown => write!(f, "."),
         }
     }
 }
@@ -127,6 +128,7 @@ pub enum AlleleOrigin {
     Father { allele: AlleleNum },
     Mother { allele: AlleleNum },
     Unclear,
+    Unknown,
 }
 
 impl AlleleOrigin {
@@ -165,6 +167,7 @@ impl fmt::Display for AlleleOrigin {
             AlleleOrigin::Father { allele } => write!(f, "F:{}", allele),
             AlleleOrigin::Mother { allele } => write!(f, "M:{}", allele),
             AlleleOrigin::Unclear => write!(f, "?"),
+            AlleleOrigin::Unknown => write!(f, "."),
         }
     }
 }

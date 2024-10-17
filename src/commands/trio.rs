@@ -97,7 +97,6 @@ pub fn trio(args: TrioArgs) -> Result<()> {
             drop(sender_result);
             writer_thread.join().unwrap();
         }
-
         None => {
             let bed_filename = args.bed_filename.clone();
             let reference_filename = args.reference_filename.clone();
