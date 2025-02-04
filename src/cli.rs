@@ -76,7 +76,9 @@ pub struct SharedArgs {
     pub output_path: String,
 
     #[clap(long = "trid")]
-    #[clap(help = "TRID of a specific repeat to analyze, should be in the BED file")]
+    #[clap(
+        help = "TRID of a specific repeat to analyze, should be in the BED file (note: this is assumed to be unique where the first match will be analyzed"
+    )]
     #[clap(value_name = "TRID")]
     pub trid: Option<String>,
 
@@ -197,7 +199,7 @@ pub struct DuoArgs {
     pub shared: SharedArgs,
 
     #[clap(required = true)]
-    #[clap(short = 'a')]
+    #[clap(short = '1')]
     #[clap(long = "sample-a")]
     #[clap(help = "Prefix of first sample VCF and spanning reads BAM files")]
     #[clap(value_name = "PREFIX")]
@@ -205,7 +207,7 @@ pub struct DuoArgs {
     pub a_prefix: String,
 
     #[clap(required = true)]
-    #[clap(short = 'b')]
+    #[clap(short = '2')]
     #[clap(long = "sample-b")]
     #[clap(help = "Prefix of second sample VCF and spanning reads BAM files")]
     #[clap(value_name = "PREFIX")]

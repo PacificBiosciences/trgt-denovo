@@ -7,22 +7,24 @@ use crate::{
     util::{Params, Result},
 };
 use anyhow::anyhow;
+use core::fmt;
 use itertools::Itertools;
-use log;
 use noodles::{
     bam,
     bgzf::Reader,
     sam,
     vcf::{
         self,
-        record::genotypes::{self, sample::value::Genotype},
-        record::info::field,
-        Record,
+        record::{
+            genotypes::{self, sample::value::Genotype},
+            info::field::{self},
+            Record,
+        },
     },
 };
 use once_cell::sync::Lazy;
 use serde::Serialize;
-use std::{fmt, fs::File, ops::Index};
+use std::{fs::File, ops::Index};
 
 /// Serialize a value as a display string.
 ///
@@ -78,7 +80,7 @@ pub fn serialize_with_precision<
 #[derive(Debug, PartialEq, Clone)]
 pub struct Allele {
     /// Vector of alignments of reads supporting this allele, storing the read and alignment score
-    pub read_aligns: Vec<(ReadInfo, i32)>, // TODO: Do we need the score here?
+    pub read_aligns: Vec<(ReadInfo, i32)>,
     /// The sequence of the allele
     pub seq: Vec<u8>,
     /// TRGT motif count in this allele
@@ -303,7 +305,14 @@ pub fn get_reads(
 ) -> Result<Vec<ReadInfo>> {
     let query = bam.query(bam_header, &locus.region)?;
     let reads: Vec<ReadInfo> = query
-        .map(|record| record.map_err(|e| e.into()).map(ReadInfo::new))
+        .filter_map(|record| match record {
+            Ok(r) => match ReadInfo::new(r, locus) {
+                Ok(Some(read_info)) => Some(Ok(read_info)),
+                Ok(None) => None,
+                Err(e) => Some(Err(e)),
+            },
+            Err(e) => Some(Err(e.into())),
+        })
         .collect::<Result<Vec<ReadInfo>>>()?;
 
     if reads.is_empty() {
@@ -352,39 +361,49 @@ fn get_vcf_data(
         }
     };
 
-    if let Some(result) = query.into_iter().next() {
+    let mut prev_pos = None;
+    for result in query {
         let record = result?;
-        let info = record.info();
+        let curr_pos = record.position();
 
-        let trid = info.get(&*TRID_KEY).unwrap().unwrap().to_string();
-        if &trid != locus_id {
-            return Err(anyhow!("TRID={} missing", locus_id));
+        // If we see a different position than the previous record, we have gone too far without finding our TR of interest
+        if let Some(pos) = prev_pos {
+            if curr_pos != pos {
+                return Err(anyhow!("TRID={} missing", locus_id));
+            }
         }
+        prev_pos = Some(curr_pos);
 
-        let format = record.genotypes().get_index(0).unwrap();
+        let info = record.info();
+        let trid = info.get(&*TRID_KEY).unwrap().unwrap().to_string();
 
-        let genotype = match format.genotype() {
-            Some(Ok(genotype)) => genotype,
-            _ => return Err(anyhow!("TRID={} misses genotyping", locus_id)),
-        };
+        if &trid == locus_id {
+            let format = record.genotypes().get_index(0).unwrap();
 
-        let (allele_seqs, genotype_indices) =
-            process_genotypes(&genotype, &record, locus, is_trgt_v1 as usize)?;
+            let genotype = match format.genotype() {
+                Some(Ok(genotype)) => genotype,
+                _ => return Err(anyhow!("TRID={} misses genotyping", locus_id)),
+            };
 
-        let mc_field = format.get(&*MC_KEY).unwrap().unwrap().to_string();
-        let motif_counts = mc_field.split(',').map(ToString::to_string).collect();
+            let (allele_seqs, genotype_indices) =
+                process_genotypes(&genotype, &record, locus, is_trgt_v1 as usize)?;
 
-        let al_field = format.get(&*AL_KEY).unwrap().unwrap().to_string();
-        let allele_lengths = al_field.split(',').map(ToString::to_string).collect();
+            let mc_field = format.get(&*MC_KEY).unwrap().unwrap().to_string();
+            let motif_counts = mc_field.split(',').map(ToString::to_string).collect();
 
-        return Ok(VcfData {
-            allele_seqs,
-            motif_counts,
-            allele_lengths,
-            genotype_indices,
-        });
+            let al_field = format.get(&*AL_KEY).unwrap().unwrap().to_string();
+            let allele_lengths = al_field.split(',').map(ToString::to_string).collect();
+
+            return Ok(VcfData {
+                allele_seqs,
+                motif_counts,
+                allele_lengths,
+                genotype_indices,
+            });
+        }
     }
-    Err(anyhow!("TRID={} missing", &locus.id))
+
+    Err(anyhow!("TRID={} missing", locus_id))
 }
 
 /// Processes genotype information from a VCF record to generate allele sequences.
@@ -441,31 +460,6 @@ fn process_genotypes(
         genotype_indices.push(allele_index);
     }
     Ok((alleles, genotype_indices))
-}
-
-/// Loads alleles for a specific family member role (father, mother, or child).
-///
-/// Wrapper around `load_alleles` that handles errors and logs warnings
-/// specific to the family member role being processed.
-///
-/// # Arguments
-///
-/// * `role` - A character representing the family member role ('F', 'M', or 'C').
-/// * `locus` - A reference to the `Locus` for which alleles are to be loaded.
-/// * `subhandle` - A reference to the `SubHandle` containing file handles.
-/// * `params` - Parameters used downstream.
-/// * `aligner` - A mutable reference to the `WFAligner` for performing alignments.
-pub fn load_alleles_handle(
-    role: char,
-    locus: &Locus,
-    subhandle: &mut SampleLocalData,
-    params: &Params,
-    aligner: &mut WFAligner,
-) -> Result<AlleleSet> {
-    load_alleles(locus, subhandle, params, aligner).map_err(|err| {
-        log::warn!("Skipping {} in {}", err, role);
-        err
-    })
 }
 
 #[derive(Debug, PartialEq)]

@@ -7,7 +7,7 @@ use super::denovo;
 use crate::{
     aligner::WFAligner,
     allele::{
-        join_allele_attribute, load_alleles_handle, serialize_as_display, serialize_with_precision,
+        join_allele_attribute, load_alleles, serialize_as_display, serialize_with_precision,
         Allele, AlleleSet,
     },
     handles::DuoLocalData,
@@ -88,6 +88,10 @@ fn check_field_similarity(
 #[derive(Debug, PartialEq, Serialize, Clone)]
 #[allow(non_snake_case)]
 pub struct AlleleResult {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub motifs: String,
     pub trid: String,
     pub genotype: usize,
     pub denovo_coverage: usize,
@@ -112,6 +116,8 @@ pub struct AlleleResult {
     pub a_AL: String,
     pub b_AL: String,
     pub b_overlap_coverage: String,
+    #[serde(skip)]
+    pub read_ids: Option<Vec<String>>,
 }
 
 pub fn process_alleles(
@@ -121,6 +127,10 @@ pub fn process_alleles(
     aligner: &mut WFAligner,
 ) -> Result<Vec<AlleleResult>> {
     let mut template_result = AlleleResult {
+        chrom: locus.region.name().to_string(),
+        start: locus.region.interval().start().unwrap().get(),
+        end: locus.region.interval().end().unwrap().get(),
+        motifs: locus.motifs.join(","),
         trid: locus.id.clone(),
         genotype: 0,
         denovo_coverage: 0,
@@ -140,10 +150,11 @@ pub fn process_alleles(
         a_AL: ".".to_string(),
         b_AL: ".".to_string(),
         b_overlap_coverage: ".".to_string(),
+        read_ids: None,
     };
 
-    let a_alleles = load_alleles_handle('A', locus, &mut handle.sample1, params, aligner);
-    let b_alleles = load_alleles_handle('B', locus, &mut handle.sample2, params, aligner);
+    let a_alleles = load_alleles(locus, &mut handle.sample1, params, aligner);
+    let b_alleles = load_alleles(locus, &mut handle.sample2, params, aligner);
 
     if let Ok(ref alleles) = a_alleles {
         template_result.a_dropout = alleles
@@ -170,7 +181,17 @@ pub fn process_alleles(
         template_result.b_AL = join_allele_attribute(alleles, |a| &a.allele_length);
     }
 
-    if a_alleles.is_err() || b_alleles.is_err() {
+    let error_labels: Vec<&str> = [("A", &a_alleles), ("B", &b_alleles)]
+        .iter()
+        .filter_map(|&(label, res)| if res.is_err() { Some(label) } else { None })
+        .collect();
+
+    if !error_labels.is_empty() {
+        log::warn!(
+            "Skipping TRID={} missing genotyping in: {}",
+            locus.id,
+            error_labels.join(",")
+        );
         return Ok(vec![template_result]);
     }
 
@@ -212,6 +233,7 @@ pub fn process_alleles(
             .map(|c| c.to_string())
             .collect::<Vec<String>>()
             .join(",");
+        result.read_ids = dna.read_ids;
         out_vec.push(result);
     }
 

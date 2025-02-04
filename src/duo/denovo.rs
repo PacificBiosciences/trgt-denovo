@@ -25,6 +25,8 @@ pub struct DenovoAllele {
     pub index: usize,
     /// The number of B reads per allele that overlap with the A allele
     pub b_overlap_coverage: Vec<i32>,
+    /// The read IDs that contribute to de novo coverage
+    pub read_ids: Option<Vec<String>>,
 }
 
 /// Assesses de novo alleles by comparing between two samples.
@@ -55,8 +57,18 @@ pub fn assess_denovo<'a>(
         let a_align_scores =
             align_allele(denovo_allele, &denovo_allele.seq, params.clip_len, aligner);
 
-        let (denovo_coverage, mean_diff_b) =
-            get_denovo_coverage(&b_align_scores, &a_align_scores, params.parent_quantile);
+        let child_read_scores: Vec<(String, i32)> = a_align_scores
+            .iter()
+            .zip(&denovo_allele.read_aligns)
+            .map(|(&score, (read_info, _))| (read_info.name.clone(), score))
+            .collect();
+
+        let (denovo_coverage, mean_diff_b, read_ids) = get_denovo_coverage(
+            &b_align_scores,
+            &a_align_scores,
+            &child_read_scores,
+            params.parent_quantile,
+        );
 
         let child_score_threshold = math::median(&a_align_scores).unwrap_or(f64::MAX);
         let b_overlap_coverage = get_overlap_coverage(child_score_threshold, &b_align_scores);
@@ -75,6 +87,11 @@ pub fn assess_denovo<'a>(
             mean_diff_b,
             index: denovo_allele.index,
             b_overlap_coverage,
+            read_ids: if read_ids.is_empty() {
+                None
+            } else {
+                Some(read_ids)
+            },
         });
     }
 
@@ -84,10 +101,19 @@ pub fn assess_denovo<'a>(
 fn get_denovo_coverage(
     b_align_scores: &[Vec<i32>],
     a_align_scores: &[i32],
+    child_reads: &[(String, i32)],
     p_quantile: f64,
-) -> (usize, f32) {
+) -> (usize, f32, Vec<String>) {
     let top_b_score = get_top_other_score(b_align_scores, p_quantile).unwrap();
+
+    let mut denovo_read_ids = Vec::new();
+    for (read_name, score) in child_reads {
+        if (*score as f64) > top_b_score {
+            denovo_read_ids.push(read_name.clone());
+        }
+    }
+
     let (score, mean_diff_b) = get_score_count_diff(top_b_score, a_align_scores);
 
-    (score, mean_diff_b)
+    (score, mean_diff_b, denovo_read_ids)
 }

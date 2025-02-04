@@ -14,7 +14,7 @@ Developers: [Tom Mokveld](https://github.com/tmokveld), [Egor Dolzhenko](https:/
 
 ## Early version warning
 
-Please note that TRGT-denovo is still in early development and is subject to significant changes that can affect anything from input / output file formats to program behavior.
+Please note that TRGT-denovo is still in development and is subject to significant changes that can affect anything from input / output file formats to program behavior.
 
 ## Availability
 
@@ -34,7 +34,7 @@ If you notice any missing features, bugs, or need assistance with analyzing the 
 please don't hesitate to open a GitHub issue.
 
 ## Support information
-TRGT-denovo is a pre-release software intended for research use only and not for use in diagnostic procedures. 
+TRGT-denovo is software intended for research use only and not for use in diagnostic procedures. 
 While efforts have been made to ensure that TRGT-denovo lives up to the quality that PacBio strives for, we make no warranty regarding this software.
 
 As TRGT-denovo is not covered by any service level agreement or the like, please do not contact a PacBio Field Applications Scientists or PacBio Customer Service for assistance with any TRGT-denovo release. 
@@ -42,6 +42,12 @@ Please report all issues through GitHub instead.
 We make no warranty that any such issue will be addressed, to any extent or within any time frame.
 
 ## Changelog
+
+- 0.2.2
+  - Output now includes the columns chrom, start, end, and motifs.
+  - Identical starting positions are now allowed for tandem repeats, with reads pruned if they do not match the locus TRID.
+  - Read IDs contributing to de novo coverage are now logged, enabling traceability of TRIDs and alleles. The log file is named based on trio or duo mode: {child_name}_trio_denovo_reads.txt or {a_name}_duo_denovo_reads.txt.
+  - Bug fix: Resolved a flag conflict in duo mode by adjusting short-form flags, preventing overlap between --bed (-b) and --sample-b.
 
 - 0.2.1
   - Duo and trio mode now always output entries regardless of error status (e.g., missing genotyping, skip because of quick mode).

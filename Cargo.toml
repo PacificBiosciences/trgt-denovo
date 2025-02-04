@@ -1,6 +1,6 @@
 [package]
 name = "trgt-denovo"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Tom Mokveld", "Egor Dolzhenko"]
 description = """
 trgt-denovo is a CLI tool for targeted de novo tandem repeat calling from long-read HiFI sequencing data in family trios or duos.

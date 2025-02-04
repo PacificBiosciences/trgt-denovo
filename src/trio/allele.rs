@@ -7,7 +7,7 @@ use super::denovo;
 use crate::{
     aligner::WFAligner,
     allele::{
-        join_allele_attribute, load_alleles_handle, serialize_as_display, serialize_with_precision,
+        join_allele_attribute, load_alleles, serialize_as_display, serialize_with_precision,
         Allele, AlleleSet,
     },
     handles::TrioLocalData,
@@ -23,6 +23,10 @@ use std::{cmp::max, collections::HashSet};
 #[derive(Debug, PartialEq, Serialize, Clone)]
 #[allow(non_snake_case)]
 pub struct AlleleResult {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub motifs: String,
     pub trid: String,
     pub genotype: usize,
     pub denovo_coverage: usize,
@@ -59,6 +63,8 @@ pub struct AlleleResult {
     pub child_AL: String,
     pub father_overlap_coverage: String,
     pub mother_overlap_coverage: String,
+    #[serde(skip)]
+    pub read_ids: Option<Vec<String>>,
 }
 
 pub fn check_field_equivalence<'a>(
@@ -198,6 +204,10 @@ pub fn process_alleles(
     aligner: &mut WFAligner,
 ) -> Result<Vec<AlleleResult>> {
     let mut template_result = AlleleResult {
+        chrom: locus.region.name().to_string(),
+        start: locus.region.interval().start().unwrap().get(),
+        end: locus.region.interval().end().unwrap().get(),
+        motifs: locus.motifs.join(","),
         trid: locus.id.clone(),
         genotype: 0,
         denovo_coverage: 0,
@@ -226,11 +236,12 @@ pub fn process_alleles(
         child_AL: ".".to_string(),
         father_overlap_coverage: ".".to_string(),
         mother_overlap_coverage: ".".to_string(),
+        read_ids: None,
     };
 
-    let father_alleles = load_alleles_handle('F', locus, &mut handle.father, params, aligner);
-    let mother_alleles = load_alleles_handle('M', locus, &mut handle.mother, params, aligner);
-    let child_alleles = load_alleles_handle('C', locus, &mut handle.child, params, aligner);
+    let father_alleles = load_alleles(locus, &mut handle.father, params, aligner);
+    let mother_alleles = load_alleles(locus, &mut handle.mother, params, aligner);
+    let child_alleles = load_alleles(locus, &mut handle.child, params, aligner);
 
     if let Ok(ref alleles) = father_alleles {
         template_result.father_dropout = alleles
@@ -271,7 +282,21 @@ pub fn process_alleles(
         template_result.child_AL = join_allele_attribute(alleles, |a| &a.allele_length);
     }
 
-    if father_alleles.is_err() || mother_alleles.is_err() || child_alleles.is_err() {
+    let error_labels: Vec<&str> = [
+        ("F", &father_alleles),
+        ("M", &mother_alleles),
+        ("C", &child_alleles),
+    ]
+    .iter()
+    .filter_map(|&(label, res)| if res.is_err() { Some(label) } else { None })
+    .collect();
+
+    if !error_labels.is_empty() {
+        log::warn!(
+            "Skipping TRID={} missing genotyping in: {}",
+            locus.id,
+            error_labels.join(",")
+        );
         return Ok(vec![template_result]);
     }
 
@@ -279,7 +304,6 @@ pub fn process_alleles(
     let mother_alleles = mother_alleles.unwrap();
     let child_alleles = child_alleles.unwrap();
 
-    // Quick mode check
     if let Some(quick_mode) = &params.quick_mode {
         let should_skip = if quick_mode.is_zero() {
             check_field_equivalence(&father_alleles, &mother_alleles, &child_alleles, quick_mode)
@@ -328,6 +352,7 @@ pub fn process_alleles(
             .map(|c| c.to_string())
             .collect::<Vec<String>>()
             .join(",");
+        result.read_ids = dna.read_ids;
         out_vec.push(result);
     }
 

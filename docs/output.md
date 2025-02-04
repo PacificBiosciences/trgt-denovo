@@ -4,6 +4,10 @@ Missing values are denoted by: `.`, indicating that a given locus has a missing 
 
 Trio fields:
 
+- `chrom` contig of tandem repeat
+- `start` start position of tandem repeat
+- `end` end position of tandem repeat
+- `motifs` motif definitions of tandem repeat
 - `trid` ID of the tandem repeat, encoded as in the BED file
 - `genotype` Genotype ID of the child for a specific allele, corresponds to the TRGT genotype ID
 - `denovo_coverage` Number of child reads supporting a *de novo* allele compared to parental data
@@ -35,6 +39,10 @@ Trio fields:
 
 Duo fields:
 
+- `chrom` contig of tandem repeat
+- `start` start position of tandem repeat
+- `end` end position of tandem repeat
+- `motifs` motif definitions of tandem repeat
 - `trid` ID of the tandem repeat, encoded as in the BED file
 - `genotype` Genotype ID of sample A for a specific allele, corresponds to the TRGT genotype ID
 - `denovo_coverage` Number of sample A reads supporting a *de novo* allele compared to sample B

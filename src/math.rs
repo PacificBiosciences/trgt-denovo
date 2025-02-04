@@ -3,9 +3,8 @@
 //! This module provides functions to calculate various statistics related to alleles,
 //! such as read counts, total reads, simple dropout probabilities, and allele frequencies.
 
-use std::cmp::Ordering;
-
 use crate::allele::AlleleSet;
+use std::cmp::Ordering;
 
 /// Calculates the number of reads for each allele.
 ///
@@ -138,6 +137,9 @@ fn select(data: &[i32], k: usize) -> Option<i32> {
 
 pub fn median(data: &[i32]) -> Option<f64> {
     let size = data.len();
+    if size == 0 {
+        return None;
+    }
     match size {
         even if even % 2 == 0 => {
             let fst_med = select(data, (even / 2) - 1);
@@ -149,5 +151,51 @@ pub fn median(data: &[i32]) -> Option<f64> {
             }
         }
         odd => select(data, odd / 2).map(|x| x as f64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_median_empty() {
+        assert_eq!(median(&[]), None);
+    }
+
+    #[test]
+    fn test_median_single() {
+        assert_eq!(median(&[5]), Some(5.0));
+    }
+
+    #[test]
+    fn test_median_even() {
+        assert_eq!(median(&[3, 1, 4, 1, 5, 9, 2, 6, 5, 3]), Some(3.5));
+    }
+
+    #[test]
+    fn test_median_odd() {
+        assert_eq!(median(&[1, 3, 2, 5, 4]), Some(3.0));
+    }
+
+    #[test]
+    fn test_partition_empty() {
+        assert_eq!(partition(&[]), None);
+    }
+
+    #[test]
+    fn test_partition_single() {
+        assert_eq!(partition(&[5]), Some((vec![], 5, vec![])));
+    }
+
+    #[test]
+    fn test_partition_multiple() {
+        let result = partition(&[3, 1, 4, 1, 5, 9, 2, 6, 5, 3]);
+        assert_eq!(result, Some((vec![1, 1, 2], 3, vec![4, 5, 9, 6, 5, 3])));
+    }
+
+    #[test]
+    fn test_partition_all_equal() {
+        assert_eq!(partition(&[2, 2, 2, 2]), Some((vec![], 2, vec![2, 2, 2])));
     }
 }

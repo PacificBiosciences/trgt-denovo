@@ -80,6 +80,14 @@ pub fn duo(args: DuoArgs) -> Result<()> {
     // Check if BAM/VCF files can be opened (index validity), better to do it here before spawning threads
     DuoLocalData::new(&args.a_prefix, &args.b_prefix)?;
 
+    let a_name = std::path::Path::new(&args.a_prefix)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&args.a_prefix);
+    let readids_filename = format!("{}_duo_denovo_reads.txt", a_name);
+    let readids_writer = std::fs::File::create(&readids_filename)
+        .map_err(|e| anyhow!("Failed to create read IDs file {}: {}", readids_filename, e))?;
+
     match args.trid {
         Some(ref trid) => {
             let locus = locus::get_locus(
@@ -94,7 +102,7 @@ pub fn duo(args: DuoArgs) -> Result<()> {
                 .from_writer(std::io::stdout());
 
             let (sender_result, receiver_result) = unbounded();
-            let writer_thread = process_writer_thread(tsv_writer, receiver_result);
+            let writer_thread = process_writer_thread(tsv_writer, readids_writer, receiver_result);
 
             process_locus(&locus, &args, &params_arc, &sender_result);
 
@@ -120,7 +128,7 @@ pub fn duo(args: DuoArgs) -> Result<()> {
                 .delimiter(b'\t')
                 .from_path(&args.output_path)?;
             let (sender_result, receiver_result) = unbounded();
-            let writer_thread = process_writer_thread(tsv_writer, receiver_result);
+            let writer_thread = process_writer_thread(tsv_writer, readids_writer, receiver_result);
 
             if args.num_threads == 1 {
                 log::debug!("Single-threaded mode");
@@ -158,11 +166,27 @@ pub fn duo(args: DuoArgs) -> Result<()> {
 
 fn process_writer_thread<T: Write + Send + 'static>(
     mut tsv_writer: Writer<T>,
+    mut readids_writer: std::fs::File,
     receiver: Receiver<Vec<AlleleResult>>,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         for results in &receiver {
-            for row in results {
+            for (i, row) in results.iter().enumerate() {
+                if let Some(read_ids) = &row.read_ids {
+                    if !read_ids.is_empty() {
+                        writeln!(
+                            readids_writer,
+                            ">TRID={}\tALLELE={}\tN={}\n{}",
+                            row.trid,
+                            i,
+                            read_ids.len(),
+                            read_ids.join("\n")
+                        )
+                        .unwrap_or_else(|e| {
+                            log::error!("Failed to write read IDs: {}", e);
+                        });
+                    }
+                }
                 if let Err(err) = tsv_writer.serialize(row) {
                     log::error!("Failed to write record: {}", err);
                 }

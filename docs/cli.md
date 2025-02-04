@@ -32,6 +32,6 @@ Advanced:
 
 Verbose Output:
 
-You can increase the verbosity of TRGT-denovo's output by adding a verbose flag before the command:
+You can increase the verbosity of TRGT-denovo's output by adding a verbose flag before the command (e.g., `trgt-denovo -vv`):
 - `-v` Provides verbose output.
-- `-vv` Provides more detailed verbose output.
+- `-vv` Provides even more detailed verbose output.

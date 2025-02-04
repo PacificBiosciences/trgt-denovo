@@ -42,6 +42,8 @@ pub struct DenovoAllele {
     pub father_overlap_coverage: Vec<i32>,
     /// The number of mother reads per allele that overlap with the child allele
     pub mother_overlap_coverage: Vec<i32>,
+    /// The read IDs that contribute to de novo coverage
+    pub read_ids: Option<Vec<String>>,
 }
 
 // Valid allele combinations
@@ -97,10 +99,17 @@ pub fn assess_denovo<'a>(
         let child_align_scores =
             align_allele(denovo_allele, &denovo_allele.seq, params.clip_len, aligner);
 
-        let (denovo_coverage, mean_diff_father, mean_diff_mother) = get_denovo_coverage(
+        let child_read_scores: Vec<(String, i32)> = child_align_scores
+            .iter()
+            .zip(&denovo_allele.read_aligns)
+            .map(|(&score, (read_info, _))| (read_info.name.clone(), score))
+            .collect();
+
+        let (denovo_coverage, mean_diff_father, mean_diff_mother, read_ids) = get_denovo_coverage(
             &mother_align_scores,
             &father_align_scores,
             &child_align_scores,
+            &child_read_scores,
             params.parent_quantile,
         );
 
@@ -129,6 +138,11 @@ pub fn assess_denovo<'a>(
             index: denovo_allele.index,
             mother_overlap_coverage,
             father_overlap_coverage,
+            read_ids: if read_ids.is_empty() {
+                None
+            } else {
+                Some(read_ids)
+            },
         });
     }
     // log::trace!("Mean matrix={:?}", matrix);
@@ -314,10 +328,20 @@ fn get_denovo_coverage(
     mother_align_scores: &[Vec<i32>],
     father_align_scores: &[Vec<i32>],
     child_align_scores: &[i32],
+    child_reads: &[(String, i32)],
     parent_quantile: f64,
-) -> (usize, f32, f32) {
+) -> (usize, f32, f32, Vec<String>) {
     let top_mother_score = get_top_other_score(mother_align_scores, parent_quantile).unwrap();
     let top_father_score = get_top_other_score(father_align_scores, parent_quantile).unwrap();
+
+    let mut denovo_read_ids = Vec::new();
+    let threshold = top_mother_score.max(top_father_score);
+
+    for (read_name, score) in child_reads {
+        if (*score as f64) > threshold {
+            denovo_read_ids.push(read_name.clone());
+        }
+    }
 
     let (mother_count, mean_diff_mother) =
         get_score_count_diff(top_mother_score, child_align_scores);
@@ -330,7 +354,12 @@ fn get_denovo_coverage(
         father_count
     };
 
-    (top_score, mean_diff_father, mean_diff_mother)
+    (
+        top_score,
+        mean_diff_father,
+        mean_diff_mother,
+        denovo_read_ids,
+    )
 }
 
 #[cfg(test)]
@@ -389,9 +418,29 @@ mod tests {
         let mother_aligns = vec![vec![-24, -24, -24], vec![-24, -12, -24]];
         let father_aligns = vec![vec![-8, -8, -12], vec![-8, -8, -20]];
         let child_aligns = vec![vec![-30, -20, -30], vec![-6, 0, 0]];
+        let child_reads = vec![
+            ("read1".to_string(), -6),
+            ("read2".to_string(), 0),
+            ("read3".to_string(), 0),
+        ];
         assert_eq!(
-            get_denovo_coverage(&mother_aligns, &father_aligns, &child_aligns[1], 1.0),
-            (3, 6.0, 10.0)
+            get_denovo_coverage(
+                &mother_aligns,
+                &father_aligns,
+                &child_aligns[1],
+                &child_reads,
+                1.0
+            ),
+            (
+                3,
+                6.0,
+                10.0,
+                vec![
+                    "read1".to_string(),
+                    "read2".to_string(),
+                    "read3".to_string()
+                ]
+            )
         );
     }
 
@@ -400,9 +449,29 @@ mod tests {
         let mother_aligns = vec![vec![-24, -24, -24], vec![-24, -12, -24]];
         let father_aligns = vec![vec![-8, -8, -12], vec![-8, -8, -20]];
         let child_aligns = vec![vec![-30, 0, 0], vec![-6, 0, 0]];
+        let child_reads = vec![
+            ("read1".to_string(), -6),
+            ("read2".to_string(), 0),
+            ("read3".to_string(), 0),
+        ];
         assert_eq!(
-            get_denovo_coverage(&mother_aligns, &father_aligns, &child_aligns[1], 1.0),
-            (3, 6.0, 10.0)
+            get_denovo_coverage(
+                &mother_aligns,
+                &father_aligns,
+                &child_aligns[1],
+                &child_reads,
+                1.0
+            ),
+            (
+                3,
+                6.0,
+                10.0,
+                vec![
+                    "read1".to_string(),
+                    "read2".to_string(),
+                    "read3".to_string()
+                ]
+            )
         );
     }
 
