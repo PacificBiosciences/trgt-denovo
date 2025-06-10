@@ -22,7 +22,6 @@ use std::{
     io::{BufReader, Write},
     sync::Arc,
     thread,
-    time::Instant,
 };
 
 static ALN_SCORING: OnceCell<AlnScoring> = OnceCell::new();
@@ -42,17 +41,10 @@ fn create_aligner_with_scoring() -> WFAligner {
 
 thread_local! {
     static ALIGNER: RefCell<WFAligner> = RefCell::new(create_aligner_with_scoring());
-    static LOCAL_FAMILY_DATA: RefCell<Option<TrioLocalData>> = RefCell::new(None);
+    static LOCAL_FAMILY_DATA: RefCell<Option<TrioLocalData>> = const { RefCell::new(None) };
 }
 
 pub fn trio(args: TrioArgs) -> Result<()> {
-    log::info!(
-        "{}-{} trio start",
-        env!("CARGO_PKG_NAME"),
-        *crate::cli::FULL_VERSION
-    );
-    let start_timer = Instant::now();
-
     ALN_SCORING
         .set(args.aln_scoring)
         .map_err(|_| anyhow!("AlnScoring was already set"))?;
@@ -155,8 +147,6 @@ pub fn trio(args: TrioArgs) -> Result<()> {
             locus_stream_thread.join().unwrap();
         }
     }
-    log::info!("Total execution time: {:?}", start_timer.elapsed());
-    log::info!("{} trio end", env!("CARGO_PKG_NAME"));
     Ok(())
 }
 
@@ -191,7 +181,7 @@ fn process_writer_thread<T: Write + Send + 'static>(
             }
         }
         if receiver.recv().is_err() {
-            log::info!("All data processed, exiting writer thread.");
+            log::debug!("All data processed, exiting writer thread.");
         }
     })
 }

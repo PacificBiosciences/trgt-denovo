@@ -43,6 +43,9 @@ We make no warranty that any such issue will be addressed, to any extent or with
 
 ## Changelog
 
+- 0.2.3
+  - Bug fix: No longer skip sites that are actually genotyped when tandem repeats overlap
+
 - 0.2.2
   - Output now includes the columns chrom, start, end, and motifs.
   - Identical starting positions are now allowed for tandem repeats, with reads pruned if they do not match the locus TRID.

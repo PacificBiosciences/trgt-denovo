@@ -361,21 +361,19 @@ fn get_vcf_data(
         }
     };
 
-    let mut prev_pos = None;
     for result in query {
         let record = result?;
-        let curr_pos = record.position();
-
-        // If we see a different position than the previous record, we have gone too far without finding our TR of interest
-        if let Some(pos) = prev_pos {
-            if curr_pos != pos {
-                return Err(anyhow!("TRID={} missing", locus_id));
-            }
-        }
-        prev_pos = Some(curr_pos);
-
         let info = record.info();
-        let trid = info.get(&*TRID_KEY).unwrap().unwrap().to_string();
+        let trid = match info.get(&*TRID_KEY) {
+            Some(Some(field::Value::String(s))) => s.to_string(),
+            _ => {
+                log::trace!(
+                    "Record missing TRID or TRID is not a string, skipping: {:?}",
+                    record
+                );
+                continue;
+            }
+        };
 
         if &trid == locus_id {
             let format = record.genotypes().get_index(0).unwrap();

@@ -1,14 +1,14 @@
-use crate::util::QuickMode;
-use crate::util::{AlnScoring, Result};
+use crate::util::{AlnScoring, QuickMode, Result};
 use anyhow::anyhow;
 use chrono::Datelike;
 use clap::{ArgAction, ArgGroup, Parser, Subcommand};
-use env_logger::fmt::Color;
-use log::{Level, LevelFilter};
+use log::{Level, LevelFilter, Record};
 use once_cell::sync::Lazy;
-use std::ops::Deref;
+use owo_colors::{OwoColorize, Style};
 use std::{
+    collections::HashMap,
     io::Write,
+    ops::Deref,
     path::{Path, PathBuf},
 };
 
@@ -43,96 +43,125 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    #[clap(short = 'v')]
-    #[clap(long = "verbose")]
-    #[clap(action = ArgAction::Count)]
+    /// Specify multiple times to increase verbosity level (e.g., -vv for more verbosity)
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        action = ArgAction::Count,
+        global = true
+    )]
     pub verbosity: u8,
+
+    /// Silence all output
+    #[arg(
+        long = "quiet",
+        action = ArgAction::SetTrue,
+        global = true,
+        conflicts_with = "verbosity",
+    )]
+    pub quiet: bool,
+}
+
+impl Command {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Command::Trio(_) => "trio",
+            Command::Duo(_) => "duo",
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
 pub struct SharedArgs {
-    #[clap(required = true)]
-    #[clap(short = 'r')]
-    #[clap(long = "reference")]
-    #[clap(help = "Path to reference genome FASTA")]
-    #[clap(value_name = "FASTA")]
-    #[arg(value_parser = check_file_exists)]
+    /// Path to reference genome FASTA
+    #[arg(
+        required = true,
+        short = 'r',
+        long = "reference",
+        value_name = "FASTA",
+        value_parser = check_file_exists
+    )]
     pub reference_filename: PathBuf,
 
-    #[clap(required = true)]
-    #[clap(short = 'b')]
-    #[clap(long = "bed")]
-    #[clap(help = "BED file with repeat coordinates")]
-    #[clap(value_name = "BED")]
-    #[arg(value_parser = check_file_exists)]
+    /// BED file with repeat coordinates
+    #[arg(
+        required = true,
+        short = 'b',
+        long = "bed",
+        value_name = "BED",
+        value_parser = check_file_exists
+    )]
     pub bed_filename: PathBuf,
 
-    #[clap(required = true)]
-    #[clap(short = 'o')]
-    #[clap(long = "out")]
-    #[clap(help = "Output tsv path")]
-    #[clap(value_name = "TSV")]
-    #[arg(value_parser = check_prefix_path)]
+    /// Output tsv path
+    #[arg(
+        required = true,
+        short = 'o',
+        long = "out",
+        value_name = "TSV",
+        value_parser = check_prefix_path
+    )]
     pub output_path: String,
 
-    #[clap(long = "trid")]
-    #[clap(
-        help = "TRID of a specific repeat to analyze, should be in the BED file (note: this is assumed to be unique where the first match will be analyzed"
-    )]
-    #[clap(value_name = "TRID")]
+    /// TRID of a specific repeat to analyze, should be in the BED file (note: this is assumed to be unique where the first match will be analyzed
+    #[arg(long = "trid", value_name = "TRID")]
     pub trid: Option<String>,
 
-    #[clap(short = '@')]
-    #[clap(value_name = "THREADS")]
-    #[clap(default_value = "1")]
-    #[arg(value_parser = threads_in_range)]
+    #[arg(
+        short = '@',
+        value_name = "THREADS",
+        default_value = "1",
+        value_parser = threads_in_range
+    )]
     pub num_threads: usize,
 
-    #[clap(help_heading("Advanced"))]
-    #[clap(long = "flank-len")]
-    #[clap(help = "Amount of additional flanking sequence that should be used during alignment")]
-    #[clap(value_name = "FLANK_LEN")]
-    #[clap(default_value = "50")]
+    /// Amount of additional flanking sequence that should be used during alignment
+    #[arg(
+        help_heading("Advanced"),
+        long = "flank-len",
+        value_name = "FLANK_LEN",
+        default_value = "50"
+    )]
     pub flank_len: usize,
 
-    #[clap(help_heading("Advanced"))]
-    #[clap(long = "no-clip-aln")]
-    #[clap(help = "Score alignments without stripping the flanks")]
-    #[clap(value_name = "CLIP")]
+    /// Score alignments without stripping the flanks
+    #[arg(help_heading("Advanced"), long = "no-clip-aln", value_name = "CLIP")]
     pub no_clip_aln: bool,
 
-    #[clap(help_heading("Advanced"))]
-    #[clap(long = "p-quantile")]
-    #[clap(help = "Quantile of alignments scores to determine the threshold")]
-    #[clap(value_name = "QUANTILE")]
-    #[clap(default_value = "1.0")]
-    #[arg(value_parser = parse_quantile)]
+    /// Quantile of alignments scores to determine the threshold
+    #[arg(
+        help_heading("Advanced"),
+        long = "p-quantile",
+        value_name = "QUANTILE",
+        default_value = "1.0",
+        value_parser = parse_quantile
+    )]
     pub p_quantile: f64,
 
-    #[clap(help_heading("Advanced"))]
-    #[clap(long = "aln-scoring")]
-    #[clap(value_name = "SCORING")]
-    #[clap(
-        help = "Scoring function for 2-piece gap affine alignment (non-negative values): mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2"
+    /// Scoring function for 2-piece gap affine alignment (non-negative values): mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2
+    #[arg(
+        help_heading("Advanced"),
+        long = "aln-scoring",
+        value_name = "SCORING",
+        default_value = "8,4,2,24,1",
+        value_parser = scoring_from_string
     )]
-    #[clap(default_value = "8,4,2,24,1")]
-    #[arg(value_parser = scoring_from_string)]
     pub aln_scoring: AlnScoring,
 
-    #[clap(help_heading("Advanced"))]
-    #[clap(long = "partition-by-aln")]
-    #[clap(
-        help = "Within-sample partitioning using alignment rather than the TRGT BAMlet AL field"
+    /// Within-sample partitioning using alignment rather than the TRGT BAMlet AL field
+    #[arg(
+        help_heading("Advanced"),
+        long = "partition-by-aln",
+        value_name = "ALN"
     )]
-    #[clap(value_name = "ALN")]
     pub partition_by_alignment: bool,
 
-    #[clap(help_heading("Advanced"))]
-    #[clap(long = "quick")]
-    #[clap(
-        help = "Only test loci that differ by a certain fraction in allele length. Format: <field>,<fraction> (e.g. AL,0.1 or AL)"
+    /// Only test loci that differ by a certain fraction in allele length. Format: <field>,<fraction> (e.g. AL,0.1 or AL)
+    #[arg(
+        help_heading("Advanced"),
+        long = "quick",
+        value_parser = parse_quick_option
     )]
-    #[clap(value_parser = parse_quick_option)]
     pub quick: Option<QuickMode>,
 }
 
@@ -165,29 +194,34 @@ pub struct TrioArgs {
     #[command(flatten)]
     pub shared: SharedArgs,
 
-    #[clap(required = true)]
-    #[clap(short = 'm')]
-    #[clap(long = "mother")]
-    #[clap(help = "Prefix of mother VCF and spanning reads BAM files")]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
+    /// Prefix of mother VCF and spanning reads BAM files
+    #[arg(
+        required = true,
+        short = 'm',
+        long = "mother",
+        value_name = "PREFIX",
+        value_parser = check_prefix_path
+    )]
     pub mother_prefix: String,
 
-    #[clap(required = true)]
-    #[clap(short = 'f')]
-    #[clap(long = "father")]
-    #[clap(help = "Prefix of father VCF and spanning reads BAM files")]
-    #[arg(value_parser = check_prefix_path)]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
+    /// Prefix of father VCF and spanning reads BAM files
+    #[arg(
+        required = true,
+        short = 'f',
+        long = "father",
+        value_name = "PREFIX",
+        value_parser = check_prefix_path
+    )]
     pub father_prefix: String,
 
-    #[clap(required = true)]
-    #[clap(short = 'c')]
-    #[clap(long = "child")]
-    #[clap(help = "Prefix of child VCF and spanning reads BAM files")]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
+    /// Prefix of child VCF and spanning reads BAM files
+    #[arg(
+        required = true,
+        short = 'c',
+        long = "child",
+        value_name = "PREFIX",
+        value_parser = check_prefix_path
+    )]
     pub child_prefix: String,
 }
 
@@ -198,20 +232,24 @@ pub struct DuoArgs {
     #[command(flatten)]
     pub shared: SharedArgs,
 
-    #[clap(required = true)]
-    #[clap(short = '1')]
-    #[clap(long = "sample-a")]
-    #[clap(help = "Prefix of first sample VCF and spanning reads BAM files")]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
+    /// Prefix of first sample VCF and spanning reads BAM files
+    #[arg(
+        required = true,
+        short = '1',
+        long = "sample-a",
+        value_name = "PREFIX",
+        value_parser = check_prefix_path
+    )]
     pub a_prefix: String,
 
-    #[clap(required = true)]
-    #[clap(short = '2')]
-    #[clap(long = "sample-b")]
-    #[clap(help = "Prefix of second sample VCF and spanning reads BAM files")]
-    #[clap(value_name = "PREFIX")]
-    #[arg(value_parser = check_prefix_path)]
+    /// Prefix of second sample VCF and spanning reads BAM files
+    #[arg(
+        required = true,
+        short = '2',
+        long = "sample-b",
+        value_name = "PREFIX",
+        value_parser = check_prefix_path
+    )]
     pub b_prefix: String,
 }
 
@@ -224,34 +262,42 @@ pub struct DuoArgs {
 ///
 /// * `args` - A reference to the parsed command-line arguments.
 pub fn init_verbose(args: &Cli) {
-    let filter_level: LevelFilter = match args.verbosity {
-        0 => LevelFilter::Info,
-        1 => LevelFilter::Debug,
-        _ => LevelFilter::Trace,
+    let filter_level: LevelFilter = if args.quiet {
+        LevelFilter::Off
+    } else {
+        match args.verbosity {
+            0 => LevelFilter::Info,  // -v
+            1 => LevelFilter::Debug, // -vv
+            _ => LevelFilter::Trace, // -vvv or more
+        }
     };
 
     env_logger::Builder::from_default_env()
-        .format(|buf, record| {
-            let level = record.level();
-            let mut style = buf.style();
-            match record.level() {
-                Level::Error => style.set_color(Color::Red),
-                Level::Warn => style.set_color(Color::Yellow),
-                Level::Info => style.set_color(Color::Green),
-                Level::Debug => style.set_color(Color::Blue),
-                Level::Trace => style.set_color(Color::Cyan),
-            };
-
-            writeln!(
-                buf,
-                "{} [{}] - {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-                style.value(level),
-                record.args()
-            )
-        })
+        .format(format_log)
         .filter_level(filter_level)
         .init();
+}
+
+static LEVEL_STYLES: Lazy<HashMap<Level, (&'static str, Style)>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    m.insert(Level::Error, ("ERROR", Style::new().red()));
+    m.insert(Level::Warn, ("WARN", Style::new().yellow()));
+    m.insert(Level::Info, ("INFO", Style::new().green()));
+    m.insert(Level::Debug, ("DEBUG", Style::new().blue()));
+    m.insert(Level::Trace, ("TRACE", Style::new().magenta()));
+    m
+});
+
+fn format_log(buf: &mut env_logger::fmt::Formatter, record: &Record) -> std::io::Result<()> {
+    let (level_text, style) = LEVEL_STYLES.get(&record.level()).unwrap();
+    let level_str = level_text.style(*style).to_string();
+    writeln!(
+        buf,
+        "{} [{}] - {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        level_str,
+        record.args()
+    )
 }
 
 /// Checks if the provided path prefix exists.

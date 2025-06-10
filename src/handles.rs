@@ -210,7 +210,7 @@ fn check_trgt_versions(bam_header: &sam::Header, vcf_header: &vcf::Header) -> Re
         .split('.')
         .next()
         .and_then(|major| major.parse::<u8>().ok())
-        .map_or(false, |major| major > 0))
+        .is_some_and(|major| major > 0))
 }
 /// A structure to hold local data for each family member.
 pub struct TrioLocalData {
