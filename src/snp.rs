@@ -4,7 +4,7 @@
 //! It includes structures and functions for representing members, calculating
 //! SNP similarities, and determining inheritance probabilities.
 
-use crate::{allele::AlleleSet, read::ReadInfo};
+use crate::{allele::AlleleSet, read::TrgtRead};
 use ndarray::{s, Array2, ArrayView2};
 use std::{
     collections::{HashMap, HashSet},
@@ -330,7 +330,7 @@ pub trait ReadFilter {
     /// # Arguments
     ///
     /// * `reads` - A mutable reference to a vector of `ReadInfo` instances to be filtered.
-    fn filter(&self, reads: &mut Vec<ReadInfo>);
+    fn filter(&self, reads: &mut Vec<TrgtRead>);
 }
 
 /// A `ReadFilter` that filters reads based on distance criteria.
@@ -338,7 +338,7 @@ pub trait ReadFilter {
 /// This filter removes SNPs that are too far from the region of interest, as defined by a maximum distance threshold.
 pub struct FilterByDist;
 impl ReadFilter for FilterByDist {
-    fn filter(&self, reads: &mut Vec<ReadInfo>) {
+    fn filter(&self, reads: &mut Vec<TrgtRead>) {
         for read in reads.iter_mut() {
             if let Some(offsets) = &mut read.mismatch_offsets {
                 offsets.drain(
@@ -361,7 +361,7 @@ impl ReadFilter for FilterByDist {
 /// This filter retains SNPs that occur with a frequency above a specified threshold, ensuring that only common SNPs are considered.
 pub struct FilterByFreq;
 impl ReadFilter for FilterByFreq {
-    fn filter(&self, reads: &mut Vec<ReadInfo>) {
+    fn filter(&self, reads: &mut Vec<TrgtRead>) {
         let mut offset_counts: HashMap<i32, usize> = HashMap::new();
         let total_reads = reads.len();
 
@@ -389,7 +389,7 @@ impl ReadFilter for FilterByFreq {
 ///
 /// * `reads` - A mutable reference to a vector of `ReadInfo` instances to be filtered.
 /// * `filters` - A slice of references to objects that implement the `ReadFilter` trait.
-pub fn apply_read_filters(reads: &mut Vec<ReadInfo>, filters: &[&(dyn ReadFilter + Sync)]) {
+pub fn apply_read_filters(reads: &mut Vec<TrgtRead>, filters: &[&(dyn ReadFilter + Sync)]) {
     for filter in filters {
         filter.filter(reads);
     }
@@ -398,20 +398,19 @@ pub fn apply_read_filters(reads: &mut Vec<ReadInfo>, filters: &[&(dyn ReadFilter
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{allele::Allele, read::ReadInfoBuilder};
+    use crate::{allele::Allele, read::TrgtReadBuilder};
     use itertools::Itertools;
 
     fn create_read_info(
         mismatch_offsets: Vec<i32>,
         start_offset: i32,
         end_offset: i32,
-    ) -> ReadInfo {
-        ReadInfoBuilder::new()
+    ) -> TrgtRead {
+        TrgtReadBuilder::default()
             .with_mismatch_offsets(Some(mismatch_offsets))
             .with_start_offset(Some(start_offset))
             .with_end_offset(Some(end_offset))
             .build()
-            .unwrap()
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::denovo::{
     align_allele, align_alleleset, get_overlap_coverage, get_score_count_diff, get_top_other_score,
 };
 use crate::math;
-use crate::util::{DenovoStatus, DenovoType, Params};
+use crate::model::{DenovoStatus, DenovoType, Params};
 
 /// Represents a de novo allele event with associated scoring and classification information.
 #[derive(Debug)]

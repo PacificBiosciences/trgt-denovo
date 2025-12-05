@@ -2,43 +2,26 @@ use crate::{
     aligner::{AlignmentStatus, WFAligner},
     handles::{Karyotype, Ploidy, SampleLocalData},
     locus::Locus,
-    read::ReadInfo,
+    model::Params,
+    read::TrgtRead,
     snp::{self},
-    util::{Params, Result},
+    util::Result,
 };
 use anyhow::anyhow;
 use core::fmt;
-use itertools::Itertools;
-use noodles::{
-    bam,
-    bgzf::Reader,
-    sam,
-    vcf::{
+use itertools::{izip, Itertools};
+use rust_htslib::{
+    bam::{self, Read as BamRead, Record},
+    bcf::{
         self,
-        record::{
-            genotypes::{self, sample::value::Genotype},
-            info::field::{self},
-            Record,
-        },
+        header::HeaderView,
+        record::GenotypeAllele::{PhasedMissing, UnphasedMissing},
+        Read as VcfRead,
     },
 };
-use once_cell::sync::Lazy;
 use serde::Serialize;
-use std::{fs::File, ops::Index};
+use std::{ops::Index, str};
 
-/// Serialize a value as a display string.
-///
-/// Serialize values for JSON output, ensuring that they are represented
-/// as human-readable strings.
-///
-/// # Arguments
-///
-/// * `value` - A reference to the value to serialize.
-/// * `serializer` - The serializer to use.
-///
-/// # Returns
-///
-/// Returns a serialized string representation of the value.
 pub fn serialize_as_display<T: std::fmt::Display, S: serde::Serializer>(
     value: &T,
     serializer: S,
@@ -46,16 +29,6 @@ pub fn serialize_as_display<T: std::fmt::Display, S: serde::Serializer>(
     serializer.collect_str(value)
 }
 
-/// Serialize a value with a specified precision as a string.
-///
-/// # Arguments
-///
-/// * `value` - A reference to the value to serialize.
-/// * `serializer` - The serializer to use.
-///
-/// # Returns
-///
-/// Returns a serialized string representation of the value with precision.
 pub fn serialize_with_precision<
     T: std::fmt::Display + PartialOrd + Into<f64>,
     S: serde::Serializer,
@@ -80,7 +53,7 @@ pub fn serialize_with_precision<
 #[derive(Debug, PartialEq, Clone)]
 pub struct Allele {
     /// Vector of alignments of reads supporting this allele, storing the read and alignment score
-    pub read_aligns: Vec<(ReadInfo, i32)>,
+    pub read_aligns: Vec<(TrgtRead, i32)>,
     /// The sequence of the allele
     pub seq: Vec<u8>,
     /// TRGT motif count in this allele
@@ -101,12 +74,12 @@ impl Allele {
     ///
     /// # Arguments
     ///
-    /// * `reads` - A vector of `ReadInfo` instances representing the reads.
+    /// * `reads` - A vector of `TrgtRead` instances representing the reads.
     ///
     /// # Returns
     ///
     /// Returns an `Allele` instance with default values and provided reads.
-    pub fn dummy(reads: Vec<ReadInfo>) -> Allele {
+    pub fn dummy(reads: Vec<TrgtRead>) -> Allele {
         Allele {
             seq: vec![],
             genotype: 0,
@@ -122,12 +95,7 @@ pub fn join_allele_attribute(
     alleles: &AlleleSet,
     attribute: impl Fn(&Allele) -> &String,
 ) -> String {
-    alleles
-        .iter()
-        .map(attribute)
-        .map(|s| s.to_string())
-        .collect::<Vec<String>>()
-        .join(",")
+    alleles.iter().map(attribute).join(",")
 }
 
 /// Static array of filters to be applied to reads.
@@ -146,7 +114,7 @@ pub static FILTERS: &[&'static (dyn snp::ReadFilter + Sync)] =
 /// # Returns
 ///
 /// Returns an array containing the counts of reads for each haplotype.
-pub fn calculate_hp_counts(reads: &[ReadInfo]) -> [usize; 3] {
+pub fn calculate_hp_counts(reads: &[TrgtRead]) -> [usize; 3] {
     let mut hp_counts = [0; 3];
     for read in reads {
         match read.haplotype {
@@ -188,7 +156,7 @@ pub fn load_alleles(
         subhandle.is_trgt_v1,
     )?;
 
-    let mut reads = get_reads(&mut subhandle.bam, &subhandle.bam_header, locus)?;
+    let mut reads = get_reads(&mut subhandle.bam, locus)?;
     snp::apply_read_filters(&mut reads, FILTERS);
 
     let hp_counts = calculate_hp_counts(&reads);
@@ -199,19 +167,25 @@ pub fn load_alleles(
         assign_reads_by_classification(&vcf_data.allele_seqs, reads)
     };
 
-    let alleles = vcf_data
-        .allele_seqs
-        .into_iter()
-        .enumerate()
-        .map(|(index, allele_seq)| Allele {
+    let alleles = izip!(
+        vcf_data.allele_seqs,
+        vcf_data.genotype_indices,
+        reads_by_allele,
+        vcf_data.motif_counts,
+        vcf_data.allele_lengths,
+    )
+    .enumerate()
+    .map(
+        |(index, (allele_seq, genotype, read_aligns, motif_count, allele_length))| Allele {
             seq: allele_seq,
-            genotype: vcf_data.genotype_indices[index],
-            read_aligns: reads_by_allele[index].to_owned(),
-            motif_count: vcf_data.motif_counts[index].to_owned(),
-            allele_length: vcf_data.allele_lengths[index].to_owned(),
+            genotype,
+            read_aligns,
+            motif_count,
+            allele_length,
             index,
-        })
-        .collect();
+        },
+    )
+    .collect();
 
     Ok(AlleleSet { alleles, hp_counts })
 }
@@ -224,7 +198,7 @@ pub fn load_alleles(
 /// # Arguments
 ///
 /// * `alleles` - A slice of allele sequences.
-/// * `reads` - A vector of `ReadInfo` instances representing the reads.
+/// * `reads` - A vector of `TrgtRead` instances representing the reads.
 /// * `clip_len` - The length of the clipping to be applied to alignments.
 /// * `aligner` - A mutable reference to the `WFAligner` for performing alignments.
 ///
@@ -233,10 +207,10 @@ pub fn load_alleles(
 /// Returns a vector of vectors, each containing tuples of `ReadInfo` and alignment scores.
 fn assign_reads_by_alignment(
     alleles: &[Vec<u8>],
-    reads: Vec<ReadInfo>,
+    reads: Vec<TrgtRead>,
     clip_len: usize,
     aligner: &mut WFAligner,
-) -> Vec<Vec<(ReadInfo, i32)>> {
+) -> Vec<Vec<(TrgtRead, i32)>> {
     let mut reads_by_allele = vec![Vec::new(); alleles.len()];
     let mut index_flip: usize = 0;
     for read in reads {
@@ -274,8 +248,8 @@ fn assign_reads_by_alignment(
 
 fn assign_reads_by_classification(
     alleles: &[Vec<u8>],
-    reads: Vec<ReadInfo>,
-) -> Vec<Vec<(ReadInfo, i32)>> {
+    reads: Vec<TrgtRead>,
+) -> Vec<Vec<(TrgtRead, i32)>> {
     let mut reads_by_allele = vec![Vec::new(); alleles.len()];
     for read in reads {
         let al = read.classification.unwrap() as usize;
@@ -291,41 +265,34 @@ fn assign_reads_by_classification(
 ///
 /// # Arguments
 ///
-/// * `bam` - A reference to an `Arc<Mutex<bam::IndexedReader<Reader<File>>>>`.
-/// * `bam_header` - A reference to an `Arc<sam::Header>`.
+/// * `bam` - A reference to an `bam::IndexedReader`.
 /// * `locus` - A reference to the `Locus` for which reads are to be retrieved.
 ///
 /// # Returns
 ///
 /// A result containing a vector of `ReadInfo` instances if successful, or an error if not.
-pub fn get_reads(
-    bam: &mut bam::IndexedReader<Reader<File>>,
-    bam_header: &sam::Header,
-    locus: &Locus,
-) -> Result<Vec<ReadInfo>> {
-    let query = bam.query(bam_header, &locus.region)?;
-    let reads: Vec<ReadInfo> = query
-        .filter_map(|record| match record {
-            Ok(r) => match ReadInfo::new(r, locus) {
-                Ok(Some(read_info)) => Some(Ok(read_info)),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            },
-            Err(e) => Some(Err(e.into())),
-        })
-        .collect::<Result<Vec<ReadInfo>>>()?;
+pub fn get_reads(bam: &mut bam::IndexedReader, locus: &Locus) -> Result<Vec<TrgtRead>> {
+    bam.fetch((
+        locus.region.contig.as_str(),
+        locus.region.start,
+        locus.region.end,
+    ))
+    .map_err(|e| anyhow!("Error querying in {} in BAM: {}", locus.id, e))?;
+
+    let mut reads = Vec::new();
+    let mut record = Record::new();
+    while let Some(()) = bam.read(&mut record).transpose()? {
+        if let Some(trgt_read) = TrgtRead::new(&record, locus)? {
+            reads.push(trgt_read);
+        }
+    }
 
     if reads.is_empty() {
-        Err(anyhow!("no reads found for locus: {}", locus.id))
+        Err(anyhow!("No reads found for locus: {}", locus.id))
     } else {
         Ok(reads)
     }
 }
-
-// Define custom tags for lookup in TRGT VCFs
-static TRID_KEY: Lazy<field::Key> = Lazy::new(|| "TRID".parse().unwrap());
-static MC_KEY: Lazy<genotypes::keys::Key> = Lazy::new(|| "MC".parse().unwrap());
-static AL_KEY: Lazy<genotypes::keys::Key> = Lazy::new(|| "AL".parse().unwrap());
 
 /// Extracts allele sequences and associated information from a VCF file for a given locus.
 ///
@@ -336,8 +303,8 @@ static AL_KEY: Lazy<genotypes::keys::Key> = Lazy::new(|| "AL".parse().unwrap());
 /// # Arguments
 ///
 /// * `locus` - A reference to the `Locus` for which allele sequences are to be extracted.
-/// * `vcf` - A reference to an `Arc<Mutex<vcf::IndexedReader<File>>>`.
-/// * `vcf_header` - A reference to an `Arc<vcf::Header>`.
+/// * `vcf` - A reference to an `bcf::IndexedReader`.
+/// * `vcf_header` - A reference to an `bcf::HeaderView`.
 /// * `is_trgt_v1` - Flag if TRGT v1.0 is used, if it is, skip the padding base in the allele sequences.
 ///
 /// # Returns
@@ -345,52 +312,51 @@ static AL_KEY: Lazy<genotypes::keys::Key> = Lazy::new(|| "AL".parse().unwrap());
 /// A result containing VcfData if successful, or an error if not.
 fn get_vcf_data(
     locus: &Locus,
-    vcf: &mut vcf::IndexedReader<File>,
-    vcf_header: &vcf::Header,
+    vcf: &mut bcf::IndexedReader,
+    vcf_header: &HeaderView,
     is_trgt_v1: bool,
 ) -> Result<VcfData> {
     let locus_id = &locus.id;
-    let query = match vcf.query(vcf_header, &locus.region) {
-        Ok(query) => query,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::InvalidInput {
-                return Err(anyhow!("TRID={} missing", locus_id));
-            } else {
-                return Err(anyhow!("Error querying {} in VCF: {}", locus_id, e));
-            }
-        }
-    };
+    // TODO: make part of locus
+    let rid = vcf_header
+        .name2rid(locus.region.contig.as_bytes())
+        .map_err(|_| anyhow!("Contig {} not found in VCF header", locus.region.contig))?;
 
-    for result in query {
-        let record = result?;
-        let info = record.info();
-        let trid = match info.get(&*TRID_KEY) {
-            Some(Some(field::Value::String(s))) => s.to_string(),
-            _ => {
-                log::trace!(
-                    "Record missing TRID or TRID is not a string, skipping: {:?}",
-                    record
-                );
-                continue;
-            }
+    vcf.fetch(
+        rid,
+        locus.region.start as u64,
+        Some(locus.region.end as u64),
+    )
+    .map_err(|e| anyhow!("Error querying {} in VCF: {}", locus_id, e))?;
+
+    let mut record = vcf.empty_record();
+    while let Some(()) = vcf.read(&mut record).transpose()? {
+        let trid_matches = if let Ok(Some(trid_field)) = record.info(b"TRID").string() {
+            let vcf_trid_parts = trid_field.iter().map(|s| str::from_utf8(s).ok());
+            let locus_id_parts = locus_id.split(',').map(Some);
+            vcf_trid_parts.eq(locus_id_parts)
+        } else {
+            false
         };
 
-        if &trid == locus_id {
-            let format = record.genotypes().get_index(0).unwrap();
-
-            let genotype = match format.genotype() {
-                Some(Ok(genotype)) => genotype,
-                _ => return Err(anyhow!("TRID={} misses genotyping", locus_id)),
-            };
-
+        if trid_matches {
             let (allele_seqs, genotype_indices) =
-                process_genotypes(&genotype, &record, locus, is_trgt_v1 as usize)?;
+                process_genotypes(&record, locus, is_trgt_v1 as usize, locus_id)?;
 
-            let mc_field = format.get(&*MC_KEY).unwrap().unwrap().to_string();
-            let motif_counts = mc_field.split(',').map(ToString::to_string).collect();
+            let motif_counts: Vec<String> = record
+                .format(b"MC")
+                .string()?
+                .first()
+                .and_then(|bytes| str::from_utf8(bytes).ok())
+                .map(|s| s.split(',').map(str::to_string).collect())
+                .ok_or_else(|| anyhow!("Missing or malformed MC field for TRID={}", locus_id))?;
 
-            let al_field = format.get(&*AL_KEY).unwrap().unwrap().to_string();
-            let allele_lengths = al_field.split(',').map(ToString::to_string).collect();
+            let allele_lengths: Vec<String> = record
+                .format(b"AL")
+                .integer()?
+                .first()
+                .map(|int_slice| int_slice.iter().map(|num| num.to_string()).collect())
+                .ok_or_else(|| anyhow!("Missing or malformed AL field for TRID={}", locus_id))?;
 
             return Ok(VcfData {
                 allele_seqs,
@@ -400,64 +366,63 @@ fn get_vcf_data(
             });
         }
     }
-
     Err(anyhow!("TRID={} missing", locus_id))
 }
 
-/// Processes genotype information from a VCF record to generate allele sequences.
-///
-/// # Arguments
-///
-/// * `genotype` - A reference to the `Genotype` from the VCF record.
-/// * `record` - A reference to the VCF `Record`.
-/// * `locus` - A reference to the `Locus` associated with the alleles.
-/// * `is_trgt_v1` - Flag if TRGT v1.0 is used, if it is, skip the padding base in the allele sequences.
-///
-/// # Returns
-///
-/// A result containing a tuple with allele sequences and genotype indices if successful, or an error if not.
 fn process_genotypes(
-    genotype: &Genotype,
-    record: &Record,
+    record: &bcf::Record,
     locus: &Locus,
     is_trgt_v1: usize,
+    trid: &str,
 ) -> Result<(Vec<Vec<u8>>, Vec<usize>)> {
-    let mut reference_bases = record.reference_bases().to_string().into_bytes();
-    reference_bases = reference_bases.into_iter().skip(is_trgt_v1).collect();
-
-    let alternate_bases = record
-        .alternate_bases()
-        .iter()
-        .map(|base| {
-            let mut base_bytes = base.to_string().into_bytes();
-            base_bytes = base_bytes.into_iter().skip(is_trgt_v1).collect();
-            base_bytes
-        })
-        .collect::<Vec<Vec<u8>>>();
-
-    let mut seq = locus.left_flank.clone();
-    let mut alleles = Vec::new();
-    let mut genotype_indices = Vec::new();
-
-    for allele in genotype.iter() {
-        let allele_index: usize = allele
-            .position()
-            .ok_or_else(|| anyhow!("Allele position missing for TRID={}", locus.id))?;
-        match allele_index {
-            0 => seq.extend_from_slice(&reference_bases),
-            _ => seq.extend_from_slice(
-                alternate_bases
-                    .get(allele_index - 1)
-                    .ok_or_else(|| anyhow!("Invalid allele index for TRID={}", locus.id))?,
-            ),
-        }
-        seq.extend_from_slice(&locus.right_flank);
-        alleles.push(seq.clone());
-        seq.truncate(locus.left_flank.len()); // reset the sequence for the next allele
-
-        genotype_indices.push(allele_index);
+    let genotype = record
+        .genotypes()
+        .map_err(|_| anyhow!("Missing genotype for TRID={}", trid))?
+        .get(0);
+    if genotype[0] == UnphasedMissing || genotype[0] == PhasedMissing {
+        return Err(anyhow!("Missing genotype for TRID={}", trid));
     }
-    Ok((alleles, genotype_indices))
+
+    let vcf_allele_seqs: Vec<Vec<u8>> = record
+        .alleles()
+        .iter()
+        .map(|allele| allele.iter().skip(is_trgt_v1).copied().collect())
+        .collect();
+
+    let genotype_indices: Vec<usize> = genotype
+        .iter()
+        .filter_map(|allele| allele.index())
+        .map(|idx| idx as usize)
+        .collect();
+
+    Ok(build_allele_seqs(
+        &vcf_allele_seqs,
+        genotype_indices,
+        &locus.left_flank,
+        &locus.right_flank,
+    ))
+}
+
+fn build_allele_seqs(
+    vcf_allele_seqs: &[Vec<u8>],
+    mut genotype_indices: Vec<usize>,
+    left_flank: &[u8],
+    right_flank: &[u8],
+) -> (Vec<Vec<u8>>, Vec<usize>) {
+    // Sort the indices to ensure phased genotypes are handled consistently.
+    genotype_indices.sort_unstable();
+
+    let mut seq = left_flank.to_vec();
+    let mut alleles = Vec::new();
+
+    for &allele_index in &genotype_indices {
+        let allele_seq = &vcf_allele_seqs[allele_index];
+        seq.extend_from_slice(allele_seq);
+        seq.extend_from_slice(right_flank);
+        alleles.push(seq.clone());
+        seq.truncate(left_flank.len());
+    }
+    (alleles, genotype_indices)
 }
 
 #[derive(Debug, PartialEq)]
@@ -489,17 +454,18 @@ impl AlleleSet {
         let phased_reads = hp1_reads + hp2_reads;
         let total_reads = phased_reads + unphased_reads;
 
-        let ploidy = karyotype.get_ploidy(locus.region.name()).unwrap();
+        let ploidy = karyotype.get_ploidy(&locus.region.contig).unwrap();
 
         if total_reads < MIN_COVERAGE {
-            return DropoutType::FullDropout;
+            DropoutType::FullDropout
         } else if (unphased_reads < MIN_COVERAGE)
-            & (ploidy != Ploidy::One)
-            & (hp1_reads < MIN_COVERAGE || hp2_reads < MIN_COVERAGE)
+            && (ploidy != Ploidy::One)
+            && (hp1_reads < MIN_COVERAGE || hp2_reads < MIN_COVERAGE)
         {
-            return DropoutType::HaplotypeDropout;
+            DropoutType::HaplotypeDropout
+        } else {
+            DropoutType::None
         }
-        DropoutType::None
     }
 }
 
@@ -553,4 +519,62 @@ pub struct VcfData {
     pub motif_counts: Vec<String>,
     pub allele_lengths: Vec<String>,
     pub genotype_indices: Vec<usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_allele_seqs_sorts_indices() {
+        let vcf_allele_seqs = vec![b"REF".to_vec(), b"ALT1".to_vec(), b"ALT2".to_vec()];
+        let left_flank = b"LF";
+        let right_flank = b"RF";
+
+        // 1|0 == 0|1
+        let (alleles_1_0, indices_1_0) =
+            build_allele_seqs(&vcf_allele_seqs, vec![1, 0], left_flank, right_flank);
+        let (alleles_0_1, indices_0_1) =
+            build_allele_seqs(&vcf_allele_seqs, vec![0, 1], left_flank, right_flank);
+
+        assert_eq!(alleles_1_0, alleles_0_1);
+        assert_eq!(indices_1_0, indices_0_1);
+        assert_eq!(indices_1_0, vec![0, 1]);
+
+        assert_eq!(alleles_1_0[0], b"LFREFRF".to_vec());
+        assert_eq!(alleles_1_0[1], b"LFALT1RF".to_vec());
+    }
+
+    #[test]
+    fn test_build_allele_seqs_with_homozygous() {
+        let vcf_allele_seqs = vec![b"REF".to_vec(), b"ALT1".to_vec()];
+        let left_flank = b"LF";
+        let right_flank = b"RF";
+
+        // 1/1 == two identical alleles
+        let (alleles, indices) =
+            build_allele_seqs(&vcf_allele_seqs, vec![1, 1], left_flank, right_flank);
+
+        assert_eq!(indices, vec![1, 1]);
+        assert_eq!(alleles.len(), 2);
+        assert_eq!(alleles[0], alleles[1]);
+        assert_eq!(alleles[0], b"LFALT1RF".to_vec());
+    }
+
+    #[test]
+    fn test_build_allele_seqs_with_three_alleles() {
+        let vcf_allele_seqs = vec![b"REF".to_vec(), b"ALT1".to_vec(), b"ALT2".to_vec()];
+        let left_flank = b"LF";
+        let right_flank = b"RF";
+
+        // 2|0 == 0|2
+        let (alleles_2_0, indices_2_0) =
+            build_allele_seqs(&vcf_allele_seqs, vec![2, 0], left_flank, right_flank);
+        let (alleles_0_2, indices_0_2) =
+            build_allele_seqs(&vcf_allele_seqs, vec![0, 2], left_flank, right_flank);
+
+        assert_eq!(alleles_2_0, alleles_0_2);
+        assert_eq!(indices_2_0, indices_0_2);
+        assert_eq!(indices_2_0, vec![0, 2]);
+    }
 }

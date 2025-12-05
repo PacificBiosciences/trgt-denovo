@@ -1,30 +1,23 @@
 //! Defines the `Locus` struct and associated functions for handling genomic loci.
 //!
-use crate::util::Result;
+use crate::{
+    readers::{open_catalog_reader, open_genome_reader, CatalogReader},
+    region::GenomicRegion,
+    util::Result,
+};
 use anyhow::{anyhow, Context};
 use crossbeam_channel::Sender;
-use noodles::{
-    bed,
-    core::{Position, Region},
-    fasta::{self, io::BufReadSeek, record::Sequence},
-};
-use std::{
-    collections::{HashMap, HashSet},
-    fs::{self, File},
-    io::BufReader,
-    path::PathBuf,
-};
+use rust_htslib::faidx;
+use std::{collections::HashMap, io::BufRead, path::PathBuf};
 
 /// Represents a genomic locus with its associated information.
 ///
-/// A `Locus` contains the identifier, structure, motifs, and flanking sequences
+/// A `Locus` contains the identifier, motifs, and flanking sequences
 /// of a genomic region, as well as the region itself.
 #[derive(Debug, PartialEq)]
 pub struct Locus {
     /// A unique identifier for the locus.
     pub id: String,
-    ///  The structure of the locus.
-    pub struc: String,
     /// A list of motifs associated with the locus.
     pub motifs: Vec<String>,
     ///  The sequence of the left flanking region.
@@ -32,7 +25,7 @@ pub struct Locus {
     /// The sequence of the right flanking region.
     pub right_flank: Vec<u8>,
     /// The genomic region of the locus.
-    pub region: Region,
+    pub region: GenomicRegion,
 }
 
 /// Decodes a single info field from a BED file into a name-value pair.
@@ -93,33 +86,38 @@ impl Locus {
     /// A result containing the new `Locus` instance if successful, or an error if the
     /// chromosome is not found, required fields are missing, or flanks cannot be retrieved.
     pub fn new(
-        genome: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
-        chrom_lookup: &HashSet<String>,
-        line: &bed::Record<3>,
+        genome: &faidx::Reader,
+        chrom_lookup: &HashMap<String, u32>,
+        line: &str,
         flank_len: usize,
     ) -> Result<Self> {
-        if !chrom_lookup.contains(line.reference_sequence_name()) {
+        const EXPECTED_FIELD_COUNT: usize = 4;
+        let split_line: Vec<&str> = line.split_whitespace().collect();
+        if split_line.len() != EXPECTED_FIELD_COUNT {
             return Err(anyhow!(
-                "Chromosome {} not found in reference",
-                line.reference_sequence_name()
+                "Expected {} fields in the format 'chrom start end info', found {}: {}",
+                EXPECTED_FIELD_COUNT,
+                split_line.len(),
+                line
             ));
         }
 
-        // -1 because bed is 0-based
-        let region = Region::new(
-            line.reference_sequence_name(),
-            Position::new(usize::from(line.start_position()) - 1).unwrap()..=line.end_position(),
-        );
+        let (chrom, start, end, info_fields) = match &split_line[..] {
+            [chrom, start, end, info_fields] => (*chrom, *start, *end, *info_fields),
+            _ => unreachable!(),
+        };
 
-        let fields = decode_fields(&line.optional_fields()[0])?;
+        if !chrom_lookup.contains_key(chrom) {
+            return Err(anyhow!("Chromosome {} not found in reference", chrom));
+        }
+
+        let region = GenomicRegion::from_str_components(chrom, start, end)?;
+
+        let fields = decode_fields(info_fields)?;
 
         let id = fields
             .get("ID")
             .ok_or_else(|| anyhow!("ID field missing"))?
-            .to_string();
-        let struc = fields
-            .get("STRUC")
-            .ok_or_else(|| anyhow!("STRUC field missing"))?
             .to_string();
         let motifs = fields
             .get("MOTIFS")
@@ -132,13 +130,36 @@ impl Locus {
 
         Ok(Locus {
             id,
-            struc,
             motifs,
             left_flank,
             right_flank,
             region,
         })
     }
+}
+
+pub fn get_field(fields: &HashMap<&str, String>, key: &str) -> Result<String> {
+    fields
+        .get(key)
+        .ok_or_else(|| anyhow!("{} field missing", key))
+        .map(|s| s.to_string())
+}
+
+pub fn create_chrom_lookup(reader: &faidx::Reader) -> Result<HashMap<String, u32>> {
+    let num_seqs = reader.n_seqs() as usize;
+    let mut map = HashMap::with_capacity(num_seqs);
+    for i in 0..num_seqs {
+        let name = reader.seq_name(i as i32)?;
+        let len = reader.fetch_seq_len(&name);
+        let len_u32 = u32::try_from(len).map_err(|_| {
+            anyhow!(
+                "Sequence length for '{}' is negative and cannot be converted to u32",
+                &name
+            )
+        })?;
+        map.insert(name, len_u32);
+    }
+    Ok(map)
 }
 
 /// Retrieves a specific locus by its ID from a BED file using a genome reader.
@@ -155,22 +176,17 @@ impl Locus {
 /// A result containing the `Locus` instance if found, or an error if the locus with the
 /// specified ID cannot be found or processed.
 pub fn get_locus(
-    genome_reader: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
-    catalog_reader: &mut bed::Reader<BufReader<File>>,
+    genome_reader: &faidx::Reader,
+    catalog_reader: &mut CatalogReader,
     tr_id: &str,
     flank_len: usize,
 ) -> Result<Locus> {
-    let chrom_lookup = HashSet::from_iter(
-        genome_reader
-            .index()
-            .iter()
-            .map(|entry| entry.name().to_string()),
-    );
-
+    let chrom_lookup = create_chrom_lookup(genome_reader)?;
     let query = format!("ID={tr_id};");
-    for (line_number, result) in catalog_reader.records::<3>().enumerate() {
-        let line = result.with_context(|| format!("Error reading BED line {}", line_number + 1))?;
-        if line.optional_fields().first().unwrap().contains(&query) {
+    for (line_number, result_line) in catalog_reader.lines().enumerate() {
+        let line =
+            result_line.with_context(|| format!("Error reading BED line {}", line_number + 1))?;
+        if line.contains(&query) {
             return Locus::new(genome_reader, &chrom_lookup, &line, flank_len)
                 .with_context(|| format!("Error processing BED line {}", line_number + 1));
         }
@@ -178,149 +194,68 @@ pub fn get_locus(
     Err(anyhow!("Unable to find locus {tr_id}"))
 }
 
-/// Returns an iterator over all loci in a BED file using a genome reader.
-///
-/// # Arguments
-///
-/// * `genome_reader` - A mutable reference to an indexed FASTA reader.
-/// * `catalog_reader` - A mutable reference to a BED reader.
-/// * `flank_len` - The length of the flanking sequences to retrieve for each locus.
-///
-/// # Returns
-///
-/// An iterator that yields results containing `Locus` instances or errors encountered
-/// during processing.
-pub fn get_loci<'a>(
-    genome_reader: &'a mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
-    catalog_reader: &'a mut bed::Reader<BufReader<File>>,
-    flank_len: usize,
-) -> impl Iterator<Item = Result<Locus>> + 'a {
-    let chrom_lookup = HashSet::from_iter(
-        genome_reader
-            .index()
-            .iter()
-            .map(|entry| entry.name().to_string()),
-    );
-
-    catalog_reader
-        .records::<3>()
-        .enumerate()
-        .map(move |(line_number, result_line)| {
-            result_line
-                .map_err(|err| {
-                    anyhow!(err).context(format!("Error at BED line {}", line_number + 1))
-                })
-                .and_then(|line| {
-                    Locus::new(genome_reader, &chrom_lookup, &line, flank_len)
-                        .with_context(|| format!("Error processing BED line {}", line_number + 1))
-                })
-        })
-}
-
 pub fn stream_loci_into_channel(
-    bed_filename: PathBuf,
-    reference_filename: PathBuf,
+    repeats_path: PathBuf,
+    genome_path: PathBuf,
     flank_len: usize,
     sender: Sender<Result<Locus>>,
-) {
-    let mut catalog_reader: bed::Reader<BufReader<File>> = fs::File::open(bed_filename.clone())
-        .map(BufReader::new)
-        .map(bed::Reader::new)
-        .unwrap();
+) -> Result<()> {
+    let catalog_reader = open_catalog_reader(&repeats_path)?;
+    let genome_reader = open_genome_reader(&genome_path)?;
+    let chrom_lookup = create_chrom_lookup(&genome_reader)?;
 
-    let mut genome_reader = fasta::indexed_reader::Builder::default()
-        .build_from_path(&reference_filename)
-        .unwrap();
-
-    let chrom_lookup = HashSet::from_iter(
-        genome_reader
-            .index()
-            .iter()
-            .map(|entry| entry.name().to_string()),
-    );
-
-    for (line_number, result_line) in catalog_reader.records::<3>().enumerate() {
+    for (line_number, result_line) in catalog_reader.lines().enumerate() {
         let line = match result_line {
             Ok(line) => line,
             Err(err) => {
-                let error = anyhow!(err).context(format!("Error at BED line {}", line_number + 1));
-                sender
-                    .send(Err(error))
-                    .expect("Failed to send error through channel");
-                continue;
+                sender.send(Err(
+                    anyhow!(err).context(format!("Error at BED line {}", line_number + 1))
+                ))?;
+                break;
             }
         };
 
-        let locus = Locus::new(&mut genome_reader, &chrom_lookup, &line, flank_len)
-            .with_context(|| format!("Error processing BED line {}", line_number + 1));
+        let locus_result = Locus::new(&genome_reader, &chrom_lookup, &line, flank_len);
+        let locus = match locus_result {
+            Ok(locus) => Ok(locus),
+            Err(e) => {
+                sender.send(Err(anyhow!("Error at BED line {}: {}", line_number + 1, e)))?;
+                continue;
+            }
+        };
 
         sender
             .send(locus)
             .expect("Failed to send locus through channel");
     }
+    Ok(())
 }
 
-/// Retrieves a flank sequence from the genome given a region and start/end positions.
-///
-/// # Arguments
-///
-/// * `genome` - A mutable reference to an indexed FASTA reader.
-/// * `region` - A reference to the region of interest.
-/// * `start` - The start position of the flank.
-/// * `end` - The end position of the flank.
-///
-/// # Returns
-///
-/// A result containing the flank sequence if successful, or an error if the sequence
-/// cannot be extracted.
-fn get_flank(
-    genome: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
-    region: &Region,
-    start: usize,
-    end: usize,
-) -> Result<Sequence> {
-    let start_pos = Position::try_from(start + 1)?;
-    let end_pos = Position::try_from(end)?;
-    let query_region = Region::new(region.name(), start_pos..=end_pos);
-    match genome.query(&query_region) {
-        Ok(seq) => Ok(seq.sequence().to_owned()),
-        Err(_) => Err(anyhow!("Unable to extract: {:?}", region)),
-    }
-}
-
-/// Retrieves both left and right flank sequences for a given region from the genome.
-///
-/// # Arguments
-///
-/// * `genome` - A mutable reference to an indexed FASTA reader.
-/// * `region` - A reference to the region of interest.
-/// * `flank_len` - The length of the flanking sequences to retrieve.
-///
-/// # Returns
-///
-/// A result containing a tuple with the left and right flank sequences if successful,
-/// or an error if the sequences cannot be extracted.
 fn get_flanks(
-    genome: &mut fasta::IndexedReader<Box<dyn BufReadSeek>>,
-    region: &Region,
+    genome: &faidx::Reader,
+    region: &GenomicRegion,
     flank_len: usize,
 ) -> Result<(Vec<u8>, Vec<u8>)> {
-    let (lf_start, lf_end) = (
-        region.interval().start().unwrap().get() - flank_len,
-        region.interval().start().unwrap().get(),
-    );
-    let (rf_start, rf_end) = (
-        region.interval().end().unwrap().get(),
-        region.interval().end().unwrap().get() + flank_len,
-    );
+    let fetch_start = region.start as usize - flank_len;
+    let fetch_end = region.end as usize + flank_len - 1;
 
-    let left_flank = get_flank(genome, region, lf_start, lf_end)?;
-    let right_flank = get_flank(genome, region, rf_start, rf_end)?;
+    let full_seq = genome
+        .fetch_seq(&region.contig, fetch_start, fetch_end)
+        .map_err(|e| {
+            anyhow!(
+                "Error fetching sequence for region {}:{}-{}: {}",
+                &region.contig,
+                fetch_start,
+                fetch_end,
+                e
+            )
+        })?
+        .to_ascii_uppercase();
 
-    Ok((
-        left_flank.as_ref().to_ascii_uppercase(),
-        right_flank.as_ref().to_ascii_uppercase(),
-    ))
+    let left_flank = full_seq[..flank_len].to_vec();
+    let right_flank = full_seq[full_seq.len() - flank_len..].to_vec();
+
+    Ok((left_flank, right_flank))
 }
 
 #[cfg(test)]

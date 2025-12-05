@@ -12,15 +12,18 @@ Basic Options (Common to both trio and duo):
 - `-@ <THREADS>` Number of threads, the number of sites that are processed in parallel, default = 1
 - `-h, --help` Print help
 - `-V, --version` Print version
+- `-v/--verbose` Increase verbosity (repeat flag for more detail); `--quiet` silences all logging
 
 Options specific to trio:
-- `-m, --mother <PREFIX>` Common (path) prefix of spanning reads BAM file and variant call VCF file of mother
-- `-f, --father <PREFIX>` Common (path) prefix of spanning reads BAM file and variant call VCF file of father
-- `-c, --child <PREFIX>` Common (path) prefix of spanning reads BAM file and variant call VCF file of child
+- For each sample you must supply either a prefix or explicit files (mixing across samples is allowed):
+  - `-m, --mother <PREFIX>` or `--mother-vcf <VCF>` **and** `--mother-bam <BAM>`
+  - `-f, --father <PREFIX>` or `--father-vcf <VCF>` **and** `--father-bam <BAM>`
+  - `-c, --child <PREFIX>` or `--child-vcf <VCF>` **and** `--child-bam <BAM>`
 
 Options specific to duo:
-- `-a, --sample-a <PREFIX>`  Common (path) prefix of spanning reads BAM file and variant call VCF file of the first sample
-- `-b, --sample-b <PREFIX>`  Common (path) prefix of spanning reads BAM file and variant call VCF file of the second sample
+- For each sample you must supply either a prefix or explicit files:
+  - `-1, --sample-a <PREFIX>` or `--sample-a-vcf <VCF>` **and** `--sample-a-bam <BAM>`
+  - `-2, --sample-b <PREFIX>` or `--sample-b-vcf <VCF>` **and** `--sample-b-bam <BAM>`
 
 Advanced:
 - `--flank-len <FLANK_LEN>` Amount of additional flanking sequence that should be used during alignment, default = 50

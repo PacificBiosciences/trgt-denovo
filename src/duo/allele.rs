@@ -13,7 +13,8 @@ use crate::{
     handles::DuoLocalData,
     locus::Locus,
     math,
-    util::{DenovoStatus, Params, QuickMode, Result},
+    model::{DenovoStatus, Params, QuickMode},
+    util::Result,
 };
 use serde::Serialize;
 use std::{cmp::Ordering, collections::HashSet};
@@ -127,9 +128,9 @@ pub fn process_alleles(
     aligner: &mut WFAligner,
 ) -> Result<Vec<AlleleResult>> {
     let mut template_result = AlleleResult {
-        chrom: locus.region.name().to_string(),
-        start: locus.region.interval().start().unwrap().get(),
-        end: locus.region.interval().end().unwrap().get(),
+        chrom: locus.region.contig.to_string(),
+        start: locus.region.start as usize,
+        end: locus.region.end as usize,
         motifs: locus.motifs.join(","),
         trid: locus.id.clone(),
         genotype: 0,

@@ -1,188 +1,110 @@
 use crate::{
-    aligner::{AlignmentScope, MemoryModel, WFAligner, WFAlignerGapAffine2Pieces},
+    aligner::WFAligner,
     cli::DuoArgs,
-    duo::allele::{process_alleles, AlleleResult},
-    handles::DuoLocalData,
-    locus::{self, Locus},
-    util::{AlnScoring, Params},
+    commands::shared::{self, AlleleResultExt, Args},
+    duo::allele::{self, AlleleResult},
+    handles::{DuoLocalData, SampleInput},
+    locus::Locus,
+    model::{Params, QuickMode},
 };
-use anyhow::{anyhow, Result};
-use crossbeam_channel::{self, bounded, unbounded, Receiver, Sender};
-use csv::{Writer, WriterBuilder};
-use log;
-use noodles::{bed, fasta};
-use once_cell::sync::OnceCell;
-use rayon::{
-    iter::{ParallelBridge, ParallelIterator},
-    ThreadPoolBuilder,
-};
-use std::{
-    cell::RefCell,
-    fs,
-    io::{BufReader, Write},
-    sync::Arc,
-    thread,
-};
+use anyhow::Result;
+use crossbeam_channel::Sender;
+use std::{cell::RefCell, path::Path, sync::Arc};
 
-static ALN_SCORING: OnceCell<AlnScoring> = OnceCell::new();
+impl DuoArgs {
+    /// Returns the `SampleInput` for sample A
+    pub fn sample_a_input(&self) -> SampleInput {
+        if let Some(ref prefix) = self.a_prefix {
+            SampleInput::Prefix(prefix)
+        } else {
+            SampleInput::Explicit {
+                vcf: self.a_vcf.as_ref().unwrap(),
+                bam: self.a_bam.as_ref().unwrap(),
+            }
+        }
+    }
 
-fn create_aligner_with_scoring() -> WFAligner {
-    let aln_scoring = ALN_SCORING.get().expect("AlnScoring not initialized");
-    WFAlignerGapAffine2Pieces::create_aligner(
-        aln_scoring.mismatch,
-        aln_scoring.gap_opening1,
-        aln_scoring.gap_extension1,
-        aln_scoring.gap_opening2,
-        aln_scoring.gap_extension2,
-        AlignmentScope::Alignment,
-        MemoryModel::MemoryLow, // TODO: change to MemoryHigh?
-    )
+    /// Returns the `SampleInput` for sample B
+    pub fn sample_b_input(&self) -> SampleInput {
+        if let Some(ref prefix) = self.b_prefix {
+            SampleInput::Prefix(prefix)
+        } else {
+            SampleInput::Explicit {
+                vcf: self.b_vcf.as_ref().unwrap(),
+                bam: self.b_bam.as_ref().unwrap(),
+            }
+        }
+    }
+
+    /// Returns a string identifier for sample A (used for output naming)
+    fn sample_a_identifier(&self) -> &str {
+        if let Some(ref prefix) = self.a_prefix {
+            prefix
+        } else {
+            self.a_bam.as_ref().unwrap().to_str().unwrap_or("sample_a")
+        }
+    }
+}
+
+impl Args for DuoArgs {
+    fn no_clip_aln(&self) -> bool {
+        self.no_clip_aln
+    }
+    fn flank_len(&self) -> usize {
+        self.flank_len
+    }
+    fn p_quantile(&self) -> f64 {
+        self.p_quantile
+    }
+    fn partition_by_alignment(&self) -> bool {
+        self.partition_by_alignment
+    }
+    fn quick(&self) -> &Option<QuickMode> {
+        &self.quick
+    }
+    fn bed_filename(&self) -> &Path {
+        &self.bed_filename
+    }
+    fn reference_filename(&self) -> &Path {
+        &self.reference_filename
+    }
+    fn trid(&self) -> &Option<String> {
+        &self.trid
+    }
+    fn output_path(&self) -> &str {
+        &self.output_path
+    }
+    fn num_threads(&self) -> usize {
+        self.num_threads
+    }
+    fn readids_prefix(&self) -> &str {
+        self.sample_a_identifier()
+    }
+    fn mode_name(&self) -> &str {
+        "duo"
+    }
+    fn preflight_check(&self) -> Result<()> {
+        DuoLocalData::new(self.sample_a_input(), self.sample_b_input())?;
+        Ok(())
+    }
+}
+
+impl AlleleResultExt for AlleleResult {
+    fn read_ids(&self) -> &Option<Vec<String>> {
+        &self.read_ids
+    }
+    fn trid(&self) -> &str {
+        &self.trid
+    }
 }
 
 thread_local! {
-    static ALIGNER: RefCell<WFAligner> = RefCell::new(create_aligner_with_scoring());
+    static ALIGNER: RefCell<WFAligner> = RefCell::new(shared::create_aligner_with_scoring());
     static LOCAL_DUO_DATA: RefCell<Option<DuoLocalData>> = const { RefCell::new(None) };
 }
 
 pub fn duo(args: DuoArgs) -> Result<()> {
-    ALN_SCORING
-        .set(args.aln_scoring)
-        .map_err(|_| anyhow!("AlnScoring was already set"))?;
-
-    let clip_len = if args.no_clip_aln { 0 } else { args.flank_len };
-
-    let params_arc = Arc::new(Params {
-        clip_len,
-        parent_quantile: args.p_quantile,
-        partition_by_alignment: args.partition_by_alignment,
-        quick_mode: args.quick,
-    });
-
-    let mut catalog_reader = fs::File::open(args.bed_filename.clone())
-        .map(BufReader::new)
-        .map(bed::Reader::new)?;
-
-    let mut genome_reader =
-        fasta::indexed_reader::Builder::default().build_from_path(&args.reference_filename)?;
-
-    // Check if BAM/VCF files can be opened (index validity), better to do it here before spawning threads
-    DuoLocalData::new(&args.a_prefix, &args.b_prefix)?;
-
-    let a_name = std::path::Path::new(&args.a_prefix)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(&args.a_prefix);
-    let readids_filename = format!("{}_duo_denovo_reads.txt", a_name);
-    let readids_writer = std::fs::File::create(&readids_filename)
-        .map_err(|e| anyhow!("Failed to create read IDs file {}: {}", readids_filename, e))?;
-
-    match args.trid {
-        Some(ref trid) => {
-            let locus = locus::get_locus(
-                &mut genome_reader,
-                &mut catalog_reader,
-                trid,
-                args.flank_len,
-            )?;
-
-            let tsv_writer = WriterBuilder::new()
-                .delimiter(b'\t')
-                .from_writer(std::io::stdout());
-
-            let (sender_result, receiver_result) = unbounded();
-            let writer_thread = process_writer_thread(tsv_writer, readids_writer, receiver_result);
-
-            process_locus(&locus, &args, &params_arc, &sender_result);
-
-            drop(sender_result);
-            writer_thread.join().unwrap();
-        }
-
-        None => {
-            let bed_filename = args.bed_filename.clone();
-            let reference_filename = args.reference_filename.clone();
-            let flank_len = args.flank_len;
-            let (sender_locus, receiver_locus) = bounded(2048);
-            let locus_stream_thread = thread::spawn(move || {
-                locus::stream_loci_into_channel(
-                    bed_filename,
-                    reference_filename,
-                    flank_len,
-                    sender_locus,
-                );
-            });
-
-            let tsv_writer = WriterBuilder::new()
-                .delimiter(b'\t')
-                .from_path(&args.output_path)?;
-            let (sender_result, receiver_result) = unbounded();
-            let writer_thread = process_writer_thread(tsv_writer, readids_writer, receiver_result);
-
-            if args.num_threads == 1 {
-                log::debug!("Single-threaded mode");
-                for locus in receiver_locus {
-                    match locus {
-                        Ok(locus) => process_locus(&locus, &args, &params_arc, &sender_result),
-                        Err(err) => log::error!("Locus Processing: {:#}", err),
-                    }
-                }
-            } else {
-                log::debug!(
-                    "Multi-threaded mode: estimated available cores: {}",
-                    thread::available_parallelism().unwrap().get()
-                );
-                let pool = initialize_thread_pool(args.num_threads)?;
-                pool.install(|| {
-                    receiver_locus.into_iter().par_bridge().for_each_with(
-                        &sender_result,
-                        |s, result| match result {
-                            Ok(locus) => process_locus(&locus, &args, &params_arc, s),
-                            Err(err) => log::error!("Locus Processing: {:#}", err),
-                        },
-                    );
-                });
-            }
-            drop(sender_result);
-            writer_thread.join().unwrap();
-            locus_stream_thread.join().unwrap();
-        }
-    }
-    Ok(())
-}
-
-fn process_writer_thread<T: Write + Send + 'static>(
-    mut tsv_writer: Writer<T>,
-    mut readids_writer: std::fs::File,
-    receiver: Receiver<Vec<AlleleResult>>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        for results in &receiver {
-            for (i, row) in results.iter().enumerate() {
-                if let Some(read_ids) = &row.read_ids {
-                    if !read_ids.is_empty() {
-                        writeln!(
-                            readids_writer,
-                            ">TRID={}\tALLELE={}\tN={}\n{}",
-                            row.trid,
-                            i,
-                            read_ids.len(),
-                            read_ids.join("\n")
-                        )
-                        .unwrap_or_else(|e| {
-                            log::error!("Failed to write read IDs: {}", e);
-                        });
-                    }
-                }
-                if let Err(err) = tsv_writer.serialize(row) {
-                    log::error!("Failed to write record: {}", err);
-                }
-                tsv_writer.flush().unwrap();
-            }
-        }
-        if receiver.recv().is_err() {
-            log::debug!("All data processed, exiting writer thread.");
-        }
-    })
+    shared::run(args, process_locus)
 }
 
 fn process_locus(
@@ -196,11 +118,11 @@ fn process_locus(
             let mut duo_data = local_family_data.borrow_mut();
             if duo_data.is_none() {
                 *duo_data = Some(
-                    DuoLocalData::new(&args.a_prefix, &args.b_prefix)
+                    DuoLocalData::new(args.sample_a_input(), args.sample_b_input())
                         .expect("Failed to initialize DuoLocalData"),
                 );
             }
-            if let Ok(result) = process_alleles(
+            if let Ok(result) = allele::process_alleles(
                 locus,
                 duo_data.as_mut().unwrap(),
                 params_arc,
@@ -210,12 +132,4 @@ fn process_locus(
             }
         });
     });
-}
-
-fn initialize_thread_pool(num_threads: usize) -> Result<rayon::ThreadPool> {
-    log::info!("Starting job pool with {} thread(s)...", num_threads);
-    ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .map_err(|e| anyhow!("Failed to initialize thread pool: {}", e))
 }

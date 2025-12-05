@@ -1,45 +1,40 @@
 [package]
 name = "trgt-denovo"
-version = "0.2.3"
-authors = ["Tom Mokveld", "Egor Dolzhenko"]
+version = "0.3.0"
+authors = [
+    "Tom Mokveld <tmokveld@pacificbiosciences.com>",
+    "Egor Dolzhenko <edolzhenko@pacificbiosciences.com>",
+]
 description = """
 trgt-denovo is a CLI tool for targeted de novo tandem repeat calling from long-read HiFI sequencing data in family trios or duos.
 """
 edition = "2021"
+license-file = "LICENSE.md"
 build = "build.rs"
-
-# TODO: migrate to vergen 9
-[build-dependencies]
-vergen = { version = "8.0.0", features = ["git", "gitcl"] }
-bindgen = "=0.65.1"
 
 [[bin]]
 bench = false
 path = "src/main.rs"
 name = "trgt-denovo"
 
+[build-dependencies]
+vergen-gitcl = { version = "1", features = ["build"] }
+
+[dev-dependencies]
+tempfile = "3"
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-wfa2-sys = { version = "0.1.0", git = "https://github.com/ctsa/rust-wfa2.git", rev = "6e1d1dd" }
-clap = { version = "4.0", features = ["suggestions", "derive"] }
+rust-htslib = { version = "0.49", default-features = false }
+clap = { version = "4.5", features = ["suggestions", "derive"] }
 itertools = "0.14"
 env_logger = "0.11"
 owo-colors = { version = "4.2", features = ["supports-colors"] }
 log = "0.4"
 chrono = "0.4"
 csv = "1.3"
-ndarray = "0.16"
-# flate2 = { version = "1.0", default-features = false, features = ["zlib-ng"] }  # Options: zlib-ng, zlib, zlib-ng-compat
-noodles = { version = "0.56", features = [
-    "vcf",
-    "fasta",
-    "core",
-    "bam",
-    "sam",
-    "bgzf",
-    "bed",
-] }
-once_cell = "1.18"
+ndarray = "0.17"
 rayon = "1.8"
 crossbeam-channel = "0.5"
 anyhow = "1.0"
+wfa2-sys = { version = "0.1.0", git = "https://github.com/ctsa/rust-wfa2.git", rev = "4342b3b06278656fa51c0a33b4eb0b67d53bfa8c" }

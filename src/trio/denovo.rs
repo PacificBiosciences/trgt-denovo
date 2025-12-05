@@ -12,7 +12,7 @@ use crate::{
         get_top_other_score,
     },
     math,
-    util::{AlleleNum, AlleleOrigin, DenovoStatus, DenovoType, Params},
+    model::{AlleleNum, AlleleOrigin, DenovoStatus, DenovoType, Params},
 };
 use ndarray::{Array2, ArrayBase, Dim, OwnedRepr};
 use std::cmp::Ordering;
@@ -95,7 +95,6 @@ pub fn assess_denovo<'a>(
             align_alleleset(mother_gts, &denovo_allele.seq, params.clip_len, aligner);
         let father_align_scores =
             align_alleleset(father_gts, &denovo_allele.seq, params.clip_len, aligner);
-
         let child_align_scores =
             align_allele(denovo_allele, &denovo_allele.seq, params.clip_len, aligner);
 
@@ -365,7 +364,7 @@ fn get_denovo_coverage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{allele::Allele, read::ReadInfoBuilder};
+    use crate::{allele::Allele, read::TrgtReadBuilder};
 
     #[test]
     fn test_parent_origin_matrix_1() {
@@ -406,7 +405,7 @@ mod tests {
     #[test]
     fn test_get_parental_count_diff() {
         let top_parent_score = -8.0;
-        let child_aligns = vec![vec![-30, -20, -30], vec![-6, 3, 0]];
+        let child_aligns = [vec![-30, -20, -30], vec![-6, 3, 0]];
         assert_eq!(
             get_score_count_diff(top_parent_score, &child_aligns[1]),
             (3, 7.0)
@@ -417,7 +416,7 @@ mod tests {
     fn test_get_denovo_coverage() {
         let mother_aligns = vec![vec![-24, -24, -24], vec![-24, -12, -24]];
         let father_aligns = vec![vec![-8, -8, -12], vec![-8, -8, -20]];
-        let child_aligns = vec![vec![-30, -20, -30], vec![-6, 0, 0]];
+        let child_aligns = [vec![-30, -20, -30], vec![-6, 0, 0]];
         let child_reads = vec![
             ("read1".to_string(), -6),
             ("read2".to_string(), 0),
@@ -448,7 +447,7 @@ mod tests {
     fn test_get_denovo_coverage_single_allele() {
         let mother_aligns = vec![vec![-24, -24, -24], vec![-24, -12, -24]];
         let father_aligns = vec![vec![-8, -8, -12], vec![-8, -8, -20]];
-        let child_aligns = vec![vec![-30, 0, 0], vec![-6, 0, 0]];
+        let child_aligns = [vec![-30, 0, 0], vec![-6, 0, 0]];
         let child_reads = vec![
             ("read1".to_string(), -6),
             ("read2".to_string(), 0),
@@ -482,8 +481,8 @@ mod tests {
                 seq: b"ATATATAT".to_vec(),
                 genotype: 0,
                 read_aligns: vec![
-                    (ReadInfoBuilder::default().build().unwrap(), 0),
-                    (ReadInfoBuilder::default().build().unwrap(), 1),
+                    (TrgtReadBuilder::default().build(), 0),
+                    (TrgtReadBuilder::default().build(), 1),
                 ],
                 motif_count: "".to_string(),
                 allele_length: "".to_string(),
@@ -493,8 +492,8 @@ mod tests {
                 seq: b"ATATATAT".to_vec(),
                 genotype: 1,
                 read_aligns: vec![
-                    (ReadInfoBuilder::default().build().unwrap(), 0),
-                    (ReadInfoBuilder::default().build().unwrap(), 1),
+                    (TrgtReadBuilder::default().build(), 0),
+                    (TrgtReadBuilder::default().build(), 1),
                 ],
                 motif_count: "".to_string(),
                 allele_length: "".to_string(),
@@ -520,8 +519,8 @@ mod tests {
                 seq: b"ATATATAT".to_vec(),
                 genotype: 0,
                 read_aligns: vec![
-                    (ReadInfoBuilder::default().build().unwrap(), 0),
-                    (ReadInfoBuilder::default().build().unwrap(), 1),
+                    (TrgtReadBuilder::default().build(), 0),
+                    (TrgtReadBuilder::default().build(), 1),
                 ],
                 motif_count: "".to_string(),
                 allele_length: "".to_string(),
@@ -531,8 +530,8 @@ mod tests {
                 seq: b"ATA".to_vec(),
                 genotype: 1,
                 read_aligns: vec![
-                    (ReadInfoBuilder::default().build().unwrap(), 0),
-                    (ReadInfoBuilder::default().build().unwrap(), 1),
+                    (TrgtReadBuilder::default().build(), 0),
+                    (TrgtReadBuilder::default().build(), 1),
                 ],
                 motif_count: "".to_string(),
                 allele_length: "".to_string(),
@@ -558,8 +557,8 @@ mod tests {
                 seq: b"ATATA".to_vec(),
                 genotype: 0,
                 read_aligns: vec![
-                    (ReadInfoBuilder::default().build().unwrap(), 0),
-                    (ReadInfoBuilder::default().build().unwrap(), 1),
+                    (TrgtReadBuilder::default().build(), 0),
+                    (TrgtReadBuilder::default().build(), 1),
                 ],
                 motif_count: "".to_string(),
                 allele_length: "".to_string(),
@@ -569,8 +568,8 @@ mod tests {
                 seq: b"ATATATAT".to_vec(),
                 genotype: 1,
                 read_aligns: vec![
-                    (ReadInfoBuilder::default().build().unwrap(), 0),
-                    (ReadInfoBuilder::default().build().unwrap(), 1),
+                    (TrgtReadBuilder::default().build(), 0),
+                    (TrgtReadBuilder::default().build(), 1),
                 ],
                 motif_count: "".to_string(),
                 allele_length: "".to_string(),

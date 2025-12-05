@@ -13,7 +13,7 @@ fn main() -> Result<()> {
     log::info!(
         "Running {}-{} [{}]",
         env!("CARGO_PKG_NAME"),
-        *FULL_VERSION,
+        FULL_VERSION,
         cli.command.name()
     );
     let start_timer = Instant::now();
@@ -22,7 +22,7 @@ fn main() -> Result<()> {
         Command::Trio(args) => trio(args)?,
         Command::Duo(args) => duo(args)?,
     }
-    log::info!("Total execution time: {:?}", start_timer.elapsed());
+    log::info!("Total execution time: {:.2?}", start_timer.elapsed());
     log::info!("{} end", env!("CARGO_PKG_NAME"));
 
     Ok(())

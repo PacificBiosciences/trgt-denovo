@@ -13,7 +13,8 @@ use crate::{
     handles::TrioLocalData,
     locus::Locus,
     math,
-    util::{AlleleOrigin, DenovoStatus, Params, QuickMode, Result},
+    model::{AlleleOrigin, DenovoStatus, Params, QuickMode},
+    util::Result,
 };
 use itertools::Itertools;
 use serde::Serialize;
@@ -181,22 +182,6 @@ fn check_field_similarity(
     relative_difference <= tolerance
 }
 
-/// Processes alleles for a given locus and handle.
-///
-/// Coordinates the loading and processing of alleles for a family trio (father,
-/// mother, and child). It calculates statistics, dropout probabilities, and de novo allele
-/// information, and compiles the results into `AlleleResult` instances.
-///
-/// # Arguments
-///
-/// * `locus` - A reference to the `Locus` for which alleles are to be processed.
-/// * `handle` - An `Arc` containing the `Handles` for the family members.
-/// * `params` - Parameters such as the length of the clipping to be applied to alignments or the quantile used for parental allele frequency calculations.
-/// * `aligner` - A mutable reference to the `WFAligner` for performing alignments.
-///
-/// # Returns
-///
-/// A result containing a vector of `AlleleResult` instances if successful, or an error if not.
 pub fn process_alleles(
     locus: &Locus,
     handle: &mut TrioLocalData,
@@ -204,9 +189,9 @@ pub fn process_alleles(
     aligner: &mut WFAligner,
 ) -> Result<Vec<AlleleResult>> {
     let mut template_result = AlleleResult {
-        chrom: locus.region.name().to_string(),
-        start: locus.region.interval().start().unwrap().get(),
-        end: locus.region.interval().end().unwrap().get(),
+        chrom: locus.region.contig.to_string(),
+        start: locus.region.start as usize,
+        end: locus.region.end as usize,
         motifs: locus.motifs.join(","),
         trid: locus.id.clone(),
         genotype: 0,
@@ -366,7 +351,7 @@ pub fn process_alleles(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read::ReadInfo;
+    use crate::read::TrgtRead;
 
     #[test]
     fn test_check_minimal_cost_inheritance() {
@@ -375,7 +360,7 @@ mod tests {
                 .into_iter()
                 .zip(al)
                 .map(|(mc, al)| Allele {
-                    read_aligns: Vec::<(ReadInfo, i32)>::new(),
+                    read_aligns: Vec::<(TrgtRead, i32)>::new(),
                     seq: Vec::new(),
                     motif_count: mc.to_string(),
                     allele_length: al.to_string(),

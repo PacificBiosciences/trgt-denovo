@@ -1,37 +1,31 @@
-use crate::util::{AlnScoring, QuickMode, Result};
+use crate::{
+    model::{AlnScoring, QuickMode},
+    util::Result,
+};
 use anyhow::anyhow;
 use chrono::Datelike;
 use clap::{ArgAction, ArgGroup, Parser, Subcommand};
-use log::{Level, LevelFilter, Record};
-use once_cell::sync::Lazy;
-use owo_colors::{OwoColorize, Style};
+use log::{Level, LevelFilter};
+use owo_colors::{
+    colors::{Blue, Green, Magenta, Red, Yellow},
+    OwoColorize, Stream, Style,
+};
 use std::{
-    collections::HashMap,
     io::Write,
     ops::Deref,
     path::{Path, PathBuf},
 };
 
-/// Full version string including the crate version and git description.
-///
-/// This version string is used in the command-line interface to provide detailed version information.
-/// It includes the crate version from Cargo.toml and additional build information such as the git commit hash.
-/// # Examples
-/// * `0.1.0-1ba958a-dirty` - while on a dirty branch
-/// * `0.1.0-1ba958a` - with a fresh commit
-pub static FULL_VERSION: Lazy<String> = Lazy::new(|| {
-    let git_describe = env!("VERGEN_GIT_DESCRIBE");
-    if git_describe.is_empty() {
-        env!("CARGO_PKG_VERSION").to_string()
-    } else {
-        format!("{}-{}", env!("CARGO_PKG_VERSION"), git_describe)
-    }
-});
+#[cfg(has_git_describe)]
+pub const FULL_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("VERGEN_GIT_DESCRIBE"));
+
+#[cfg(not(has_git_describe))]
+pub const FULL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
 #[command(name="trgt-denovo",
           author="Tom Mokveld <tmokveld@pacificbiosciences.com>\nEgor Dolzhenko <edolzhenko@pacificbiosciences.com>", 
-          version=&**FULL_VERSION,
+          version=FULL_VERSION,
           about="Tandem repeat de novo caller",
           long_about = None,
           after_help = format!("Copyright (C) 2004-{}     Pacific Biosciences of California, Inc.
@@ -115,7 +109,7 @@ pub struct SharedArgs {
     )]
     pub num_threads: usize,
 
-    /// Amount of additional flanking sequence that should be used during alignment
+    /// Amount of additional flanking sequence that should be used during alignment (this should match --output-flank-len in TRGT)
     #[arg(
         help_heading("Advanced"),
         long = "flank-len",
@@ -188,69 +182,162 @@ impl Deref for DuoArgs {
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(group(ArgGroup::new("trio")))]
 #[command(arg_required_else_help(true))]
+#[command(group(ArgGroup::new("mother_input").required(true).args(["mother_prefix", "mother_vcf"])))]
+#[command(group(ArgGroup::new("father_input").required(true).args(["father_prefix", "father_vcf"])))]
+#[command(group(ArgGroup::new("child_input").required(true).args(["child_prefix", "child_vcf"])))]
 pub struct TrioArgs {
     #[command(flatten)]
     pub shared: SharedArgs,
 
     /// Prefix of mother VCF and spanning reads BAM files
     #[arg(
-        required = true,
         short = 'm',
         long = "mother",
         value_name = "PREFIX",
-        value_parser = check_prefix_path
+        value_parser = check_prefix_path,
+        conflicts_with_all = ["mother_vcf", "mother_bam"]
     )]
-    pub mother_prefix: String,
+    pub mother_prefix: Option<String>,
+
+    /// Path to mother VCF file (use with --mother-bam instead of --mother)
+    #[arg(
+        long = "mother-vcf",
+        value_name = "VCF",
+        value_parser = check_file_exists,
+        requires = "mother_bam"
+    )]
+    pub mother_vcf: Option<PathBuf>,
+
+    /// Path to mother BAM file (use with --mother-vcf instead of --mother)
+    #[arg(
+        long = "mother-bam",
+        value_name = "BAM",
+        value_parser = check_file_exists,
+        requires = "mother_vcf"
+    )]
+    pub mother_bam: Option<PathBuf>,
 
     /// Prefix of father VCF and spanning reads BAM files
     #[arg(
-        required = true,
         short = 'f',
         long = "father",
         value_name = "PREFIX",
-        value_parser = check_prefix_path
+        value_parser = check_prefix_path,
+        conflicts_with_all = ["father_vcf", "father_bam"]
     )]
-    pub father_prefix: String,
+    pub father_prefix: Option<String>,
+
+    /// Path to father VCF file (use with --father-bam instead of --father)
+    #[arg(
+        long = "father-vcf",
+        value_name = "VCF",
+        value_parser = check_file_exists,
+        requires = "father_bam"
+    )]
+    pub father_vcf: Option<PathBuf>,
+
+    /// Path to father BAM file (use with --father-vcf instead of --father)
+    #[arg(
+        long = "father-bam",
+        value_name = "BAM",
+        value_parser = check_file_exists,
+        requires = "father_vcf"
+    )]
+    pub father_bam: Option<PathBuf>,
 
     /// Prefix of child VCF and spanning reads BAM files
     #[arg(
-        required = true,
         short = 'c',
         long = "child",
         value_name = "PREFIX",
-        value_parser = check_prefix_path
+        value_parser = check_prefix_path,
+        conflicts_with_all = ["child_vcf", "child_bam"]
     )]
-    pub child_prefix: String,
+    pub child_prefix: Option<String>,
+
+    /// Path to child VCF file (use with --child-bam instead of --child)
+    #[arg(
+        long = "child-vcf",
+        value_name = "VCF",
+        value_parser = check_file_exists,
+        requires = "child_bam"
+    )]
+    pub child_vcf: Option<PathBuf>,
+
+    /// Path to child BAM file (use with --child-vcf instead of --child)
+    #[arg(
+        long = "child-bam",
+        value_name = "BAM",
+        value_parser = check_file_exists,
+        requires = "child_vcf"
+    )]
+    pub child_bam: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug, Clone)]
-#[command(group(ArgGroup::new("duo")))]
 #[command(arg_required_else_help(true))]
+#[command(group(ArgGroup::new("sample_a_input").required(true).args(["a_prefix", "a_vcf"])))]
+#[command(group(ArgGroup::new("sample_b_input").required(true).args(["b_prefix", "b_vcf"])))]
 pub struct DuoArgs {
     #[command(flatten)]
     pub shared: SharedArgs,
 
     /// Prefix of first sample VCF and spanning reads BAM files
     #[arg(
-        required = true,
         short = '1',
         long = "sample-a",
         value_name = "PREFIX",
-        value_parser = check_prefix_path
+        value_parser = check_prefix_path,
+        conflicts_with_all = ["a_vcf", "a_bam"]
     )]
-    pub a_prefix: String,
+    pub a_prefix: Option<String>,
+
+    /// Path to first sample VCF file (use with --sample-a-bam instead of --sample-a)
+    #[arg(
+        long = "sample-a-vcf",
+        value_name = "VCF",
+        value_parser = check_file_exists,
+        requires = "a_bam"
+    )]
+    pub a_vcf: Option<PathBuf>,
+
+    /// Path to first sample BAM file (use with --sample-a-vcf instead of --sample-a)
+    #[arg(
+        long = "sample-a-bam",
+        value_name = "BAM",
+        value_parser = check_file_exists,
+        requires = "a_vcf"
+    )]
+    pub a_bam: Option<PathBuf>,
 
     /// Prefix of second sample VCF and spanning reads BAM files
     #[arg(
-        required = true,
         short = '2',
         long = "sample-b",
         value_name = "PREFIX",
-        value_parser = check_prefix_path
+        value_parser = check_prefix_path,
+        conflicts_with_all = ["b_vcf", "b_bam"]
     )]
-    pub b_prefix: String,
+    pub b_prefix: Option<String>,
+
+    /// Path to second sample VCF file (use with --sample-b-bam instead of --sample-b)
+    #[arg(
+        long = "sample-b-vcf",
+        value_name = "VCF",
+        value_parser = check_file_exists,
+        requires = "b_bam"
+    )]
+    pub b_vcf: Option<PathBuf>,
+
+    /// Path to second sample BAM file (use with --sample-b-vcf instead of --sample-b)
+    #[arg(
+        long = "sample-b-bam",
+        value_name = "BAM",
+        value_parser = check_file_exists,
+        requires = "b_vcf"
+    )]
+    pub b_bam: Option<PathBuf>,
 }
 
 /// Initializes the verbosity level for logging based on the command-line arguments.
@@ -278,26 +365,22 @@ pub fn init_verbose(args: &Cli) {
         .init();
 }
 
-static LEVEL_STYLES: Lazy<HashMap<Level, (&'static str, Style)>> = Lazy::new(|| {
-    let mut m = HashMap::new();
-    m.insert(Level::Error, ("ERROR", Style::new().red()));
-    m.insert(Level::Warn, ("WARN", Style::new().yellow()));
-    m.insert(Level::Info, ("INFO", Style::new().green()));
-    m.insert(Level::Debug, ("DEBUG", Style::new().blue()));
-    m.insert(Level::Trace, ("TRACE", Style::new().magenta()));
-    m
-});
+#[inline(always)]
+fn level_style(level: Level) -> (&'static str, Style) {
+    match level {
+        Level::Error => ("ERROR", Style::new().fg::<Red>().bold()),
+        Level::Warn => ("WARN", Style::new().fg::<Yellow>()),
+        Level::Info => ("INFO", Style::new().fg::<Green>()),
+        Level::Debug => ("DEBUG", Style::new().fg::<Blue>()),
+        Level::Trace => ("TRACE", Style::new().fg::<Magenta>()),
+    }
+}
 
-fn format_log(buf: &mut env_logger::fmt::Formatter, record: &Record) -> std::io::Result<()> {
-    let (level_text, style) = LEVEL_STYLES.get(&record.level()).unwrap();
-    let level_str = level_text.style(*style).to_string();
-    writeln!(
-        buf,
-        "{} [{}] - {}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        level_str,
-        record.args()
-    )
+fn format_log(buf: &mut env_logger::fmt::Formatter, record: &log::Record) -> std::io::Result<()> {
+    let (label, style) = level_style(record.level());
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let painted_label = label.if_supports_color(Stream::Stderr, |t| style.style(t));
+    writeln!(buf, "{ts} [{}] - {}", painted_label, record.args())
 }
 
 /// Checks if the provided path prefix exists.
@@ -472,5 +555,297 @@ fn parse_quick_option(s: &str) -> Result<QuickMode> {
         "AL" => Ok(QuickMode::AL(fraction)),
         // "MC" => Ok(QuickMode::MC(fraction)),
         _ => Err(anyhow!("Invalid field for quick option. Must be AL")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Helper struct to create temporary test files
+    struct TestFiles {
+        reference: NamedTempFile,
+        bed: NamedTempFile,
+        mother_vcf: NamedTempFile,
+        mother_bam: NamedTempFile,
+        father_vcf: NamedTempFile,
+        father_bam: NamedTempFile,
+        child_vcf: NamedTempFile,
+        child_bam: NamedTempFile,
+    }
+
+    impl TestFiles {
+        fn new() -> Self {
+            let mut reference = NamedTempFile::new().unwrap();
+            writeln!(reference, ">chr1\nACGT").unwrap();
+            let mut bed = NamedTempFile::new().unwrap();
+            writeln!(bed, "chr1\t100\t200\ttest_trid").unwrap();
+            Self {
+                reference,
+                bed,
+                mother_vcf: NamedTempFile::new().unwrap(),
+                mother_bam: NamedTempFile::new().unwrap(),
+                father_vcf: NamedTempFile::new().unwrap(),
+                father_bam: NamedTempFile::new().unwrap(),
+                child_vcf: NamedTempFile::new().unwrap(),
+                child_bam: NamedTempFile::new().unwrap(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_trio_with_prefix_args() {
+        let files = TestFiles::new();
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "trio",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "-m",
+            "mother_prefix",
+            "-f",
+            "father_prefix",
+            "-c",
+            "child_prefix",
+        ]);
+
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        if let Command::Trio(args) = result.unwrap().command {
+            assert_eq!(args.mother_prefix, Some("mother_prefix".to_string()));
+            assert_eq!(args.father_prefix, Some("father_prefix".to_string()));
+            assert_eq!(args.child_prefix, Some("child_prefix".to_string()));
+            assert!(args.mother_vcf.is_none());
+            assert!(args.father_vcf.is_none());
+            assert!(args.child_vcf.is_none());
+        } else {
+            panic!("Expected Trio command");
+        }
+    }
+
+    #[test]
+    fn test_trio_with_explicit_files() {
+        let files = TestFiles::new();
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "trio",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "--mother-vcf",
+            files.mother_vcf.path().to_str().unwrap(),
+            "--mother-bam",
+            files.mother_bam.path().to_str().unwrap(),
+            "--father-vcf",
+            files.father_vcf.path().to_str().unwrap(),
+            "--father-bam",
+            files.father_bam.path().to_str().unwrap(),
+            "--child-vcf",
+            files.child_vcf.path().to_str().unwrap(),
+            "--child-bam",
+            files.child_bam.path().to_str().unwrap(),
+        ]);
+
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        if let Command::Trio(args) = result.unwrap().command {
+            assert!(args.mother_prefix.is_none());
+            assert!(args.father_prefix.is_none());
+            assert!(args.child_prefix.is_none());
+            assert!(args.mother_vcf.is_some());
+            assert!(args.mother_bam.is_some());
+            assert!(args.father_vcf.is_some());
+            assert!(args.father_bam.is_some());
+            assert!(args.child_vcf.is_some());
+            assert!(args.child_bam.is_some());
+        } else {
+            panic!("Expected Trio command");
+        }
+    }
+
+    #[test]
+    fn test_trio_prefix_and_explicit_conflict() {
+        let files = TestFiles::new();
+        // Providing both --mother and --mother-vcf should fail
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "trio",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "-m",
+            "mother_prefix",
+            "--mother-vcf",
+            files.mother_vcf.path().to_str().unwrap(),
+            "--mother-bam",
+            files.mother_bam.path().to_str().unwrap(),
+            "-f",
+            "father_prefix",
+            "-c",
+            "child_prefix",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "Should fail when both prefix and explicit files are provided"
+        );
+    }
+
+    #[test]
+    fn test_trio_explicit_requires_both_vcf_and_bam() {
+        let files = TestFiles::new();
+        // Providing --mother-vcf without --mother-bam should fail
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "trio",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "--mother-vcf",
+            files.mother_vcf.path().to_str().unwrap(),
+            // Missing --mother-bam
+            "-f",
+            "father_prefix",
+            "-c",
+            "child_prefix",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "Should fail when --mother-vcf is provided without --mother-bam"
+        );
+    }
+
+    #[test]
+    fn test_trio_mixed_prefix_and_explicit() {
+        let files = TestFiles::new();
+        // Using prefix for some samples and explicit for others should work
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "trio",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "-m",
+            "mother_prefix", // prefix for mother
+            "--father-vcf",
+            files.father_vcf.path().to_str().unwrap(),
+            "--father-bam",
+            files.father_bam.path().to_str().unwrap(), // explicit for father
+            "-c",
+            "child_prefix", // prefix for child
+        ]);
+
+        assert!(
+            result.is_ok(),
+            "Should allow mixing prefix and explicit across different samples: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_duo_with_prefix_args() {
+        let files = TestFiles::new();
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "duo",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "-1",
+            "sample_a_prefix",
+            "-2",
+            "sample_b_prefix",
+        ]);
+
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        if let Command::Duo(args) = result.unwrap().command {
+            assert_eq!(args.a_prefix, Some("sample_a_prefix".to_string()));
+            assert_eq!(args.b_prefix, Some("sample_b_prefix".to_string()));
+            assert!(args.a_vcf.is_none());
+            assert!(args.b_vcf.is_none());
+        } else {
+            panic!("Expected Duo command");
+        }
+    }
+
+    #[test]
+    fn test_duo_with_explicit_files() {
+        let files = TestFiles::new();
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "duo",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "--sample-a-vcf",
+            files.mother_vcf.path().to_str().unwrap(),
+            "--sample-a-bam",
+            files.mother_bam.path().to_str().unwrap(),
+            "--sample-b-vcf",
+            files.father_vcf.path().to_str().unwrap(),
+            "--sample-b-bam",
+            files.father_bam.path().to_str().unwrap(),
+        ]);
+
+        assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+        if let Command::Duo(args) = result.unwrap().command {
+            assert!(args.a_prefix.is_none());
+            assert!(args.b_prefix.is_none());
+            assert!(args.a_vcf.is_some());
+            assert!(args.a_bam.is_some());
+            assert!(args.b_vcf.is_some());
+            assert!(args.b_bam.is_some());
+        } else {
+            panic!("Expected Duo command");
+        }
+    }
+
+    #[test]
+    fn test_duo_explicit_requires_both_vcf_and_bam() {
+        let files = TestFiles::new();
+        // Providing --sample-a-vcf without --sample-a-bam should fail
+        let result = Cli::try_parse_from([
+            "trgt-denovo",
+            "duo",
+            "-r",
+            files.reference.path().to_str().unwrap(),
+            "-b",
+            files.bed.path().to_str().unwrap(),
+            "-o",
+            "output.tsv",
+            "--sample-a-vcf",
+            files.mother_vcf.path().to_str().unwrap(),
+            // Missing --sample-a-bam
+            "-2",
+            "sample_b_prefix",
+        ]);
+
+        assert!(
+            result.is_err(),
+            "Should fail when --sample-a-vcf is provided without --sample-a-bam"
+        );
     }
 }

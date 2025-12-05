@@ -1,21 +1,26 @@
 use std::error::Error;
-use vergen::EmitBuilder;
+use vergen_gitcl::{Emitter, GitclBuilder};
 
 fn main() -> Result<(), Box<dyn Error>> {
-    match EmitBuilder::builder()
+    println!("cargo::rustc-check-cfg=cfg(has_git_describe)");
+
+    let mut git = GitclBuilder::default();
+    git.describe(false, true, Some("ThisPatternShouldNotMatchAnythingEver"));
+
+    let emitter_res = Emitter::default()
         .fail_on_error()
-        .custom_build_rs(".") // override such that it will re-run whenever we have a file change in this folder
-        .all_git()
-        .git_describe(true, false, Some("ThisPatternShouldNotMatchAnythingEver"))
-        .emit()
-    {
-        Ok(_) => {
-            println!("cargo:rerun-if-changed=Cargo.toml");
-            println!("cargo:rerun-if-changed=src");
-        }
-        Err(_e) => {
-            println!("cargo:rustc-env=VERGEN_GIT_DESCRIBE=");
-        }
+        .quiet()
+        .add_instructions(&git.build()?)
+        .and_then(|e| e.emit());
+
+    if emitter_res.is_ok() {
+        println!("cargo:rustc-cfg=has_git_describe");
     }
+
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/heads");
+    println!("cargo:rerun-if-changed=.git/refs/tags");
+
     Ok(())
 }
