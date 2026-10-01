@@ -5,7 +5,7 @@
 
 use crate::readers::open_vcf_reader;
 use crate::util::{self, Result};
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use rust_htslib::bam::{self, Read as BamRead};
 use rust_htslib::bcf::{self, Read as BcfRead};
 use std::path::{Path, PathBuf};
@@ -17,6 +17,23 @@ pub enum SampleInput<'a> {
     Prefix(&'a str),
     /// Explicit file paths for VCF and BAM
     Explicit { vcf: &'a Path, bam: &'a Path },
+}
+
+impl<'a> SampleInput<'a> {
+    /// Resolves exactly one prefix or a complete explicit VCF/BAM pair.
+    pub fn from_paths(
+        prefix: Option<&'a str>,
+        vcf: Option<&'a Path>,
+        bam: Option<&'a Path>,
+    ) -> Result<Self> {
+        match (prefix, vcf, bam) {
+            (Some(prefix), None, None) => Ok(Self::Prefix(prefix)),
+            (None, Some(vcf), Some(bam)) => Ok(Self::Explicit { vcf, bam }),
+            _ => Err(anyhow!(
+                "Provide either a sample prefix or both VCF and BAM paths, not both"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -83,10 +100,8 @@ fn get_bam_pg_string(header: &bam::HeaderView, tag: &str) -> Option<String> {
         }
         let fields: Vec<_> = line.split('\t').collect();
         let is_trgt = fields.iter().any(|&f| f == "ID:trgt" || f == "PN:trgt");
-        if is_trgt {
-            if let Some(cl_field) = fields.iter().find(|&f| f.starts_with(tag)) {
-                return Some(cl_field[3..].to_string());
-            }
+        if is_trgt && let Some(cl_field) = fields.iter().find(|&f| f.starts_with(tag)) {
+            return Some(cl_field[3..].to_string());
         }
     }
     None
@@ -95,10 +110,10 @@ fn get_bam_pg_string(header: &bam::HeaderView, tag: &str) -> Option<String> {
 fn get_vcf_trgt_version(header: &bcf::header::HeaderView) -> Option<String> {
     let mut trgt_version = None;
     for record in header.header_records().iter() {
-        if let bcf::HeaderRecord::Generic { key, value } = record {
-            if key == "trgtVersion" {
-                trgt_version = Some(value.clone());
-            }
+        if let bcf::HeaderRecord::Generic { key, value } = record
+            && key == "trgtVersion"
+        {
+            trgt_version = Some(value.clone());
         }
     }
     trgt_version
@@ -138,13 +153,8 @@ impl SampleLocalData {
             SampleInput::Explicit { vcf, bam } => (bam.to_path_buf(), vcf.to_path_buf()),
         };
 
-        let bam = bam::IndexedReader::from_path(&bam_path).unwrap_or_else(|e| {
-            panic!(
-                "Failed to initialize BAM/CRAM reader for path {}: {}",
-                bam_path.display(),
-                e
-            )
-        });
+        let bam = bam::IndexedReader::from_path(&bam_path)
+            .with_context(|| format!("Failed to open BAM/CRAM file: {}", bam_path.display()))?;
         let bam_header = bam.header();
 
         let vcf = open_vcf_reader(&vcf_path)?;
@@ -210,5 +220,39 @@ impl DuoLocalData {
             sample1: SampleLocalData::new(sample1_input)?,
             sample2: SampleLocalData::new(sample2_input)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_missing_bam_returns_reader_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let bam = directory.path().join("missing.bam");
+        let vcf = directory.path().join("missing.vcf.gz");
+        let error = match SampleLocalData::new(SampleInput::Explicit {
+            vcf: &vcf,
+            bam: &bam,
+        }) {
+            Ok(_) => panic!("A missing BAM must return an error"),
+            Err(error) => error,
+        };
+        assert!(error.downcast_ref::<rust_htslib::errors::Error>().is_some());
+    }
+
+    #[test]
+    fn test_sample_input_rejects_incomplete_or_conflicting_paths() {
+        let vcf = Path::new("sample.vcf.gz");
+        let bam = Path::new("sample.bam");
+        for (prefix, vcf, bam) in [
+            (None, None, None),
+            (None, Some(vcf), None),
+            (None, None, Some(bam)),
+            (Some("sample"), Some(vcf), Some(bam)),
+        ] {
+            assert!(SampleInput::from_paths(prefix, vcf, bam).is_err());
+        }
     }
 }

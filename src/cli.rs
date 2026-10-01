@@ -2,13 +2,13 @@ use crate::{
     model::{AlnScoring, QuickMode},
     util::Result,
 };
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use chrono::Datelike;
-use clap::{ArgAction, ArgGroup, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 use log::{Level, LevelFilter};
 use owo_colors::{
-    colors::{Blue, Green, Magenta, Red, Yellow},
     OwoColorize, Stream, Style,
+    colors::{Blue, Green, Magenta, Red, Yellow},
 };
 use std::{
     io::Write,
@@ -26,6 +26,7 @@ pub const FULL_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(name="trgt-denovo",
           author="Tom Mokveld <tmokveld@pacificbiosciences.com>\nEgor Dolzhenko <edolzhenko@pacificbiosciences.com>", 
           version=FULL_VERSION,
+          propagate_version = true,
           about="Tandem repeat de novo caller",
           long_about = None,
           after_help = format!("Copyright (C) 2004-{}     Pacific Biosciences of California, Inc.
@@ -46,7 +47,7 @@ pub struct Cli {
     )]
     pub verbosity: u8,
 
-    /// Silence all output
+    /// Silence logging
     #[arg(
         long = "quiet",
         action = ArgAction::SetTrue,
@@ -65,7 +66,7 @@ impl Command {
     }
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Args, Debug, Clone)]
 pub struct SharedArgs {
     /// Path to reference genome FASTA
     #[arg(
@@ -87,20 +88,29 @@ pub struct SharedArgs {
     )]
     pub bed_filename: PathBuf,
 
-    /// Output tsv path
+    /// Output TSV path (required unless --trid is set; otherwise defaults to stdout)
     #[arg(
-        required = true,
+        required_unless_present = "trid",
         short = 'o',
         long = "out",
         value_name = "TSV",
-        value_parser = check_prefix_path
+        value_parser = check_output_path
     )]
-    pub output_path: String,
+    pub output_path: Option<String>,
 
-    /// TRID of a specific repeat to analyze, should be in the BED file (note: this is assumed to be unique where the first match will be analyzed
+    /// Export per-read de novo alignment comparison scores to a TSV file
+    #[arg(
+        long = "alignment-scores",
+        value_name = "PATH",
+        value_parser = check_output_path
+    )]
+    pub alignment_scores: Option<String>,
+
+    /// Analyze only the first matching TRID in the BED file; write to stdout unless --out is set
     #[arg(long = "trid", value_name = "TRID")]
     pub trid: Option<String>,
 
+    /// Number of loci to process in parallel
     #[arg(
         short = '@',
         value_name = "THREADS",
@@ -122,6 +132,10 @@ pub struct SharedArgs {
     #[arg(help_heading("Advanced"), long = "no-clip-aln", value_name = "CLIP")]
     pub no_clip_aln: bool,
 
+    /// Skip BAM TR-tag validation and repeat-ID matching for legacy inputs
+    #[arg(long = "skip-tr-check", hide = true)]
+    pub skip_tr_check: bool,
+
     /// Quantile of alignments scores to determine the threshold
     #[arg(
         help_heading("Advanced"),
@@ -132,7 +146,7 @@ pub struct SharedArgs {
     )]
     pub p_quantile: f64,
 
-    /// Scoring function for 2-piece gap affine alignment (non-negative values): mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2
+    /// Two-piece affine penalties: mismatch,gap_opening1,gap_extension1,gap_opening2,gap_extension2. Mismatch and gap extensions must be positive; gap openings may be zero
     #[arg(
         help_heading("Advanced"),
         long = "aln-scoring",
@@ -181,7 +195,7 @@ impl Deref for DuoArgs {
     }
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Args, Debug, Clone)]
 #[command(arg_required_else_help(true))]
 #[command(group(ArgGroup::new("mother_input").required(true).args(["mother_prefix", "mother_vcf"])))]
 #[command(group(ArgGroup::new("father_input").required(true).args(["father_prefix", "father_vcf"])))]
@@ -195,7 +209,7 @@ pub struct TrioArgs {
         short = 'm',
         long = "mother",
         value_name = "PREFIX",
-        value_parser = check_prefix_path,
+        value_parser = check_input_prefix,
         conflicts_with_all = ["mother_vcf", "mother_bam"]
     )]
     pub mother_prefix: Option<String>,
@@ -223,7 +237,7 @@ pub struct TrioArgs {
         short = 'f',
         long = "father",
         value_name = "PREFIX",
-        value_parser = check_prefix_path,
+        value_parser = check_input_prefix,
         conflicts_with_all = ["father_vcf", "father_bam"]
     )]
     pub father_prefix: Option<String>,
@@ -251,7 +265,7 @@ pub struct TrioArgs {
         short = 'c',
         long = "child",
         value_name = "PREFIX",
-        value_parser = check_prefix_path,
+        value_parser = check_input_prefix,
         conflicts_with_all = ["child_vcf", "child_bam"]
     )]
     pub child_prefix: Option<String>,
@@ -275,7 +289,7 @@ pub struct TrioArgs {
     pub child_bam: Option<PathBuf>,
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Args, Debug, Clone)]
 #[command(arg_required_else_help(true))]
 #[command(group(ArgGroup::new("sample_a_input").required(true).args(["a_prefix", "a_vcf"])))]
 #[command(group(ArgGroup::new("sample_b_input").required(true).args(["b_prefix", "b_vcf"])))]
@@ -288,7 +302,7 @@ pub struct DuoArgs {
         short = '1',
         long = "sample-a",
         value_name = "PREFIX",
-        value_parser = check_prefix_path,
+        value_parser = check_input_prefix,
         conflicts_with_all = ["a_vcf", "a_bam"]
     )]
     pub a_prefix: Option<String>,
@@ -316,7 +330,7 @@ pub struct DuoArgs {
         short = '2',
         long = "sample-b",
         value_name = "PREFIX",
-        value_parser = check_prefix_path,
+        value_parser = check_input_prefix,
         conflicts_with_all = ["b_vcf", "b_bam"]
     )]
     pub b_prefix: Option<String>,
@@ -383,26 +397,33 @@ fn format_log(buf: &mut env_logger::fmt::Formatter, record: &log::Record) -> std
     writeln!(buf, "{ts} [{}] - {}", painted_label, record.args())
 }
 
-/// Checks if the provided path prefix exists.
-///
-/// Validates that the path prefix provided as an argument exists in the file system.
-/// It is used to ensure that the file paths constructed using this prefix will be valid.
-///
-/// # Arguments
-///
-/// * `s` - A string slice representing the path prefix to check.
-///
-/// # Returns
-///
-/// Returns a `Result<String>` which is Ok if the path prefix exists, or an Err with a descriptive message if not.
-fn check_prefix_path(s: &str) -> Result<String> {
-    let path = Path::new(s);
-    if let Some(parent_dir) = path.parent() {
-        if !parent_dir.as_os_str().is_empty() && !parent_dir.exists() {
-            return Err(anyhow!("Path does not exist: {}", parent_dir.display()));
+fn check_parent_directory(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let metadata = std::fs::metadata(parent)
+            .with_context(|| format!("Failed to access parent directory: {}", parent.display()))?;
+        if !metadata.is_dir() {
+            return Err(anyhow!("Parent is not a directory: {}", parent.display()));
         }
     }
-    Ok(s.to_string())
+    Ok(())
+}
+
+/// Checks the parent directory without requiring the prefix itself to exist.
+fn check_input_prefix(s: &str) -> Result<String> {
+    check_parent_directory(Path::new(s))?;
+    Ok(s.to_owned())
+}
+
+/// Checks the output parent and rejects a directory as the output file.
+fn check_output_path(s: &str) -> Result<String> {
+    let path = Path::new(s);
+    check_parent_directory(path)?;
+    if path.is_dir() {
+        return Err(anyhow!("Output path is a directory: {}", path.display()));
+    }
+    Ok(s.to_owned())
 }
 
 /// Validates that the provided string represents a valid number of threads.
@@ -454,22 +475,13 @@ fn parse_quantile(s: &str) -> Result<f64> {
     }
 }
 
-/// Checks if the provided file path exists.
-///
-/// Validates that the file path provided as an argument exists in the file system.
-/// It is used to ensure that the file paths provided for input files are valid before attempting to process them.
-///
-/// # Arguments
-///
-/// * `s` - A string slice representing the file path to check.
-///
-/// # Returns
-///
-/// Returns a `Result<PathBuf>` which is Ok if the file exists, or an Err with a descriptive message if not.
+/// Requires a regular input file; readers still validate formats and indexes.
 fn check_file_exists(s: &str) -> Result<PathBuf> {
     let path = Path::new(s);
-    if !path.exists() {
-        return Err(anyhow!("File does not exist: {}", path.display()));
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to access input file: {}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(anyhow!("Input path is not a file: {}", path.display()));
     }
     Ok(path.to_path_buf())
 }
@@ -484,21 +496,32 @@ fn check_file_exists(s: &str) -> Result<PathBuf> {
 ///
 /// Returns a `Result<AlnScoring>` which is Ok if the string is correctly formatted and contains valid values,
 /// or an Err with a descriptive message if the input is invalid.
-/// ```
 fn scoring_from_string(s: &str) -> Result<AlnScoring> {
-    const NUM_EXPECTED_VALUES: usize = 5;
-    let values: Vec<i32> = s.split(',').filter_map(|x| x.parse().ok()).collect();
-    if values.len() != NUM_EXPECTED_VALUES {
+    let mut fields = s.split(',');
+    let mut values = [0; 5];
+    for (index, value) in values.iter_mut().enumerate() {
+        let field = fields
+            .next()
+            .ok_or_else(|| anyhow!("Expected exactly five comma-separated integers in scoring"))?;
+        *value = field.parse().map_err(|e| {
+            anyhow!(
+                "Invalid integer in alignment scoring field {} ('{field}'): {e}",
+                index + 1
+            )
+        })?;
+    }
+    if fields.next().is_some() {
         return Err(anyhow!(
-            "Expected {} comma-separated integers values in scoring. Got {} -> {}",
-            NUM_EXPECTED_VALUES,
-            values.len(),
-            s
+            "Expected exactly five comma-separated integers in scoring"
         ));
     }
-
-    let (mismatch, gap_opening1, gap_extension1, gap_opening2, gap_extension2) =
-        (values[0], values[1], values[2], values[3], values[4]);
+    let [
+        mismatch,
+        gap_opening1,
+        gap_extension1,
+        gap_opening2,
+        gap_extension2,
+    ] = values;
 
     if mismatch <= 0
         || gap_opening1 < 0
@@ -507,14 +530,10 @@ fn scoring_from_string(s: &str) -> Result<AlnScoring> {
         || gap_extension2 <= 0
     {
         return Err(anyhow!(
-            "Invalid penalties. Got (mismatch={}, gap_opening1={}, gap_extension1={}, gap_opening2={},
-gap_extension2={}) -> (mismatch>0, gap_opening1>=0, gap_extension1>0, gap_opening2>=0,
-gap_extension2>0)",
-            mismatch,
-            gap_opening1,
-            gap_extension1,
-            gap_opening2,
-            gap_extension2
+            "Invalid penalties: mismatch={mismatch}, gap_opening1={gap_opening1}, \
+             gap_extension1={gap_extension1}, gap_opening2={gap_opening2}, \
+             gap_extension2={gap_extension2}; mismatch and gap extensions must be positive, \
+             and gap openings must be non-negative"
         ));
     }
 
@@ -547,7 +566,7 @@ fn parse_quick_option(s: &str) -> Result<QuickMode> {
         _ => {
             return Err(anyhow!(
                 "Invalid quick option format. Expected <field> or <field>,<fraction>"
-            ))
+            ));
         }
     };
 
@@ -592,6 +611,139 @@ mod tests {
                 child_vcf: NamedTempFile::new().unwrap(),
                 child_bam: NamedTempFile::new().unwrap(),
             }
+        }
+    }
+
+    fn parse_duo_with(files: &TestFiles, extra: &[&str]) -> std::result::Result<Cli, clap::Error> {
+        parse_duo_with_paths(
+            files.reference.path(),
+            files.bed.path(),
+            Path::new("output.tsv"),
+            extra,
+        )
+    }
+
+    fn parse_duo_with_paths(
+        reference: &Path,
+        bed: &Path,
+        output: &Path,
+        extra: &[&str],
+    ) -> std::result::Result<Cli, clap::Error> {
+        Cli::try_parse_from(
+            [
+                "trgt-denovo",
+                "duo",
+                "-r",
+                reference.to_str().unwrap(),
+                "-b",
+                bed.to_str().unwrap(),
+                "-o",
+                output.to_str().unwrap(),
+                "-1",
+                "a",
+                "-2",
+                "b",
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )
+    }
+
+    fn parse_without_output(
+        files: &TestFiles,
+        command: &str,
+        extra: &[&str],
+    ) -> std::result::Result<Cli, clap::Error> {
+        let samples: &[&str] = match command {
+            "trio" => &["-m", "mother", "-f", "father", "-c", "child"],
+            "duo" => &["-1", "a", "-2", "b"],
+            _ => unreachable!(),
+        };
+        Cli::try_parse_from(
+            [
+                "trgt-denovo",
+                command,
+                "-r",
+                files.reference.path().to_str().unwrap(),
+                "-b",
+                files.bed.path().to_str().unwrap(),
+            ]
+            .into_iter()
+            .chain(samples.iter().copied())
+            .chain(extra.iter().copied()),
+        )
+    }
+
+    #[test]
+    fn test_trid_allows_stdout_without_output_path() {
+        let files = TestFiles::new();
+        for command in ["trio", "duo"] {
+            let cli = parse_without_output(&files, command, &["--trid", "selected"]).unwrap();
+            let shared = match cli.command {
+                Command::Trio(args) => args.shared,
+                Command::Duo(args) => args.shared,
+            };
+            assert_eq!(shared.output_path, None);
+        }
+    }
+
+    #[test]
+    fn test_catalog_requires_output_path() {
+        let files = TestFiles::new();
+        for command in ["trio", "duo"] {
+            let error = parse_without_output(&files, command, &[]).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
+
+    #[test]
+    fn test_cli_rejects_malformed_alignment_scoring() {
+        let files = TestFiles::new();
+        for scoring in [
+            "8,bogus,4,2,24,1",
+            "8,,4,2,24,1",
+            "8,2147483648,4,2,24,1",
+            "8,bogus,2,24,1",
+            "8,4,2,24",
+            "8,4,2,24,1,2",
+        ] {
+            let error = parse_duo_with(&files, &["--aln-scoring", scoring])
+                .expect_err("Malformed alignment scoring must be rejected");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn test_cli_rejects_directories_as_input_files() {
+        let files = TestFiles::new();
+        let directory = tempfile::tempdir().unwrap();
+        let error = parse_duo_with_paths(
+            directory.path(),
+            files.bed.path(),
+            Path::new("output.tsv"),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn test_cli_rejects_non_directory_output_parent() {
+        let files = TestFiles::new();
+        let output = files.reference.path().join("output.tsv");
+        let error = parse_duo_with_paths(files.reference.path(), files.bed.path(), &output, &[])
+            .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn test_cli_subcommands_display_version() {
+        for command in ["trio", "duo"] {
+            let error = Cli::try_parse_from(["trgt-denovo", command, "--version"]).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
         }
     }
 

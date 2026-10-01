@@ -105,7 +105,7 @@ fn partition(data: &[i32]) -> Option<(Vec<i32>, i32, Vec<i32>)> {
             let pivot = pivot_slice[0];
             let (left, right) = tail.iter().fold((vec![], vec![]), |mut splits, next| {
                 {
-                    let (ref mut left, ref mut right) = &mut splits;
+                    let (left, right) = &mut splits;
                     if next < &pivot {
                         left.push(*next);
                     } else {

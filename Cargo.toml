@@ -1,6 +1,6 @@
 [package]
 name = "trgt-denovo"
-version = "0.3.0"
+version = "0.4.0"
 authors = [
     "Tom Mokveld <tmokveld@pacificbiosciences.com>",
     "Egor Dolzhenko <edolzhenko@pacificbiosciences.com>",
@@ -8,7 +8,7 @@ authors = [
 description = """
 trgt-denovo is a CLI tool for targeted de novo tandem repeat calling from long-read HiFI sequencing data in family trios or duos.
 """
-edition = "2021"
+edition = "2024"
 license-file = "LICENSE.md"
 build = "build.rs"
 
@@ -37,4 +37,4 @@ ndarray = "0.17"
 rayon = "1.8"
 crossbeam-channel = "0.5"
 anyhow = "1.0"
-wfa2-sys = { version = "0.1.0", git = "https://github.com/ctsa/rust-wfa2.git", rev = "4342b3b06278656fa51c0a33b4eb0b67d53bfa8c" }
+rust-wfa2 = { version = "0.1.0", git = "https://github.com/tmokveld/rust-wfa2.git", rev = "4eee33b33e8e7c91d51acdc2f70005bef49ac05c" }

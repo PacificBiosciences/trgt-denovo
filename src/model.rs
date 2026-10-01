@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::fmt;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlnScoring {
     pub mismatch: i32,
     pub gap_opening1: i32,
@@ -38,6 +38,7 @@ pub struct Params {
     pub clip_len: usize,
     pub parent_quantile: f64,
     pub partition_by_alignment: bool,
+    pub skip_tr_check: bool,
     pub quick_mode: Option<QuickMode>,
 }
 

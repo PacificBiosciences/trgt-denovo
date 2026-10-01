@@ -1,11 +1,11 @@
 //! Defines the `Locus` struct and associated functions for handling genomic loci.
 //!
 use crate::{
-    readers::{open_catalog_reader, open_genome_reader, CatalogReader},
+    readers::{CatalogReader, open_catalog_reader, open_genome_reader},
     region::GenomicRegion,
     util::Result,
 };
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use crossbeam_channel::Sender;
 use rust_htslib::faidx;
 use std::{collections::HashMap, io::BufRead, path::PathBuf};
@@ -154,7 +154,7 @@ pub fn create_chrom_lookup(reader: &faidx::Reader) -> Result<HashMap<String, u32
         let len_u32 = u32::try_from(len).map_err(|_| {
             anyhow!(
                 "Sequence length for '{}' is negative and cannot be converted to u32",
-                &name
+                name
             )
         })?;
         map.insert(name, len_u32);
@@ -244,7 +244,7 @@ fn get_flanks(
         .map_err(|e| {
             anyhow!(
                 "Error fetching sequence for region {}:{}-{}: {}",
-                &region.contig,
+                region.contig,
                 fetch_start,
                 fetch_end,
                 e

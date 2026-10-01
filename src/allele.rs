@@ -1,5 +1,4 @@
 use crate::{
-    aligner::{AlignmentStatus, WFAligner},
     handles::{Karyotype, Ploidy, SampleLocalData},
     locus::Locus,
     model::Params,
@@ -9,16 +8,16 @@ use crate::{
 };
 use anyhow::anyhow;
 use core::fmt;
-use itertools::{izip, Itertools};
+use itertools::{Itertools, izip};
 use rust_htslib::{
     bam::{self, Read as BamRead, Record},
     bcf::{
-        self,
+        self, Read as VcfRead,
         header::HeaderView,
         record::GenotypeAllele::{PhasedMissing, UnphasedMissing},
-        Read as VcfRead,
     },
 };
+use rust_wfa2::aligner::{AlignmentStatus, WFAligner};
 use serde::Serialize;
 use std::{ops::Index, str};
 
@@ -156,7 +155,7 @@ pub fn load_alleles(
         subhandle.is_trgt_v1,
     )?;
 
-    let mut reads = get_reads(&mut subhandle.bam, locus)?;
+    let mut reads = get_reads(&mut subhandle.bam, locus, params.skip_tr_check)?;
     snp::apply_read_filters(&mut reads, FILTERS);
 
     let hp_counts = calculate_hp_counts(&reads);
@@ -217,7 +216,9 @@ fn assign_reads_by_alignment(
         let mut max_score = None;
         let mut max_aligns = Vec::new();
         for (i, a) in alleles.iter().enumerate() {
-            if let AlignmentStatus::StatusAlgCompleted = aligner.align_end_to_end(&read.bases, a) {
+            if let AlignmentStatus::StatusAlgCompleted =
+                aligner.align_end_to_end(&read.bases, a).status
+            {
                 let score = aligner.cigar_score_clipped(clip_len);
                 match max_score {
                     None => {
@@ -267,11 +268,16 @@ fn assign_reads_by_classification(
 ///
 /// * `bam` - A reference to an `bam::IndexedReader`.
 /// * `locus` - A reference to the `Locus` for which reads are to be retrieved.
+/// * `skip_tr_check` - Skip TR-tag validation and matching, using only the BAM region query.
 ///
 /// # Returns
 ///
 /// A result containing a vector of `ReadInfo` instances if successful, or an error if not.
-pub fn get_reads(bam: &mut bam::IndexedReader, locus: &Locus) -> Result<Vec<TrgtRead>> {
+pub fn get_reads(
+    bam: &mut bam::IndexedReader,
+    locus: &Locus,
+    skip_tr_check: bool,
+) -> Result<Vec<TrgtRead>> {
     bam.fetch((
         locus.region.contig.as_str(),
         locus.region.start,
@@ -282,7 +288,7 @@ pub fn get_reads(bam: &mut bam::IndexedReader, locus: &Locus) -> Result<Vec<Trgt
     let mut reads = Vec::new();
     let mut record = Record::new();
     while let Some(()) = bam.read(&mut record).transpose()? {
-        if let Some(trgt_read) = TrgtRead::new(&record, locus)? {
+        if let Some(trgt_read) = TrgtRead::new(&record, locus, skip_tr_check)? {
             reads.push(trgt_read);
         }
     }
@@ -432,7 +438,7 @@ pub struct AlleleSet {
 }
 
 impl AlleleSet {
-    pub fn iter(&self) -> std::slice::Iter<Allele> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Allele> {
         self.alleles.iter()
     }
 
@@ -524,6 +530,34 @@ pub struct VcfData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{commands::shared::create_aligner_with_scoring, read::TrgtReadBuilder};
+
+    #[test]
+    fn test_alignment_partition_uses_clipped_repeat_scores() {
+        let left = b"AAGGAGCTGAGAATTGTTCTTCCAGATACCTTTCCGACCTCTTCTTGGTT";
+        let right = b"GGAGTGCAGTGGTGCAATCTTGGCTCACTACAACCTCCGCATCCTGGGTT";
+        let other_left = b"AAGGAGCTGAGAATTGTTCGTCCAGATACCTTTCCGACCTCTTCTTGGTT";
+        let other_right = b"GGAGTGCAGTGGTGCAATCTTGGCTCACTACAACCTCTGCATCCTGGGTT";
+        let alleles = vec![
+            [other_left.as_slice(), b"ACGT", other_right].concat(),
+            [left.as_slice(), b"ATGT", right].concat(),
+        ];
+        // The first read's flanks match allele 1, but its repeat matches allele 0.
+        let reads: Vec<_> = [
+            [left.as_slice(), b"ACGT", right].concat(),
+            alleles[1].clone(),
+        ]
+        .into_iter()
+        .map(|bases| TrgtReadBuilder::default().with_bases(bases).build())
+        .collect();
+        let expected = vec![vec![(reads[0].clone(), 0)], vec![(reads[1].clone(), 0)]];
+        let mut aligner = create_aligner_with_scoring(crate::model::AlnScoring::default()).unwrap();
+
+        assert_eq!(
+            assign_reads_by_alignment(&alleles, reads, 50, &mut aligner),
+            expected
+        );
+    }
 
     #[test]
     fn test_build_allele_seqs_sorts_indices() {

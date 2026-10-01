@@ -5,7 +5,7 @@
 //! SNP similarities, and determining inheritance probabilities.
 
 use crate::{allele::AlleleSet, read::TrgtRead};
-use ndarray::{s, Array2, ArrayView2};
+use ndarray::{Array2, ArrayView2, s};
 use std::{
     collections::{HashMap, HashSet},
     fmt, iter,
@@ -171,7 +171,7 @@ impl<const N: usize> TrinaryMatrix<N> {
     /// # Returns
     ///
     /// An `ArrayView2<u8>` representing the submatrix of SNPs for the given member.
-    pub fn member_submatrix(&self, member: &Member) -> ArrayView2<u8> {
+    pub fn member_submatrix(&self, member: &Member) -> ArrayView2<'_, u8> {
         let offset = &self.offsets[member.index()];
         self.matrix
             .slice(s![offset.start_offset..=offset.end_offset, ..])
@@ -191,7 +191,11 @@ impl<const N: usize> TrinaryMatrix<N> {
     ///
     /// An `Option<ArrayView2<u8>>` representing the submatrix of SNPs for the given allele,
     /// or `None` if the allele index is out of bounds.
-    pub fn allele_submatrix(&self, member: &Member, allele_idx: usize) -> Option<ArrayView2<u8>> {
+    pub fn allele_submatrix(
+        &self,
+        member: &Member,
+        allele_idx: usize,
+    ) -> Option<ArrayView2<'_, u8>> {
         let offset = &self.offsets[member.index()];
 
         // TODO: Check
@@ -228,7 +232,7 @@ impl<const N: usize> TrinaryMatrix<N> {
     /// # Returns
     ///
     /// An iterator over `ArrayView2<u8>` where each item is a submatrix for an allele of the member.
-    pub fn iter_alleles(&self, member: Member) -> impl Iterator<Item = ArrayView2<u8>> {
+    pub fn iter_alleles(&self, member: Member) -> impl Iterator<Item = ArrayView2<'_, u8>> {
         let offset = &self.offsets[member.index()];
         let start_offsets =
             iter::once(offset.start_offset).chain(offset.allele_offsets.iter().cloned());

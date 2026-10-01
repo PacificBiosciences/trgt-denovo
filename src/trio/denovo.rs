@@ -5,7 +5,7 @@
 //! the origin of alleles, and calculating de novo scores.
 
 use crate::{
-    aligner::WFAligner,
+    alignment_scores::ScoreRecorder,
     allele::AlleleSet,
     denovo::{
         align_allele, align_alleleset, get_overlap_coverage, get_score_count_diff,
@@ -15,6 +15,7 @@ use crate::{
     model::{AlleleNum, AlleleOrigin, DenovoStatus, DenovoType, Params},
 };
 use ndarray::{Array2, ArrayBase, Dim, OwnedRepr};
+use rust_wfa2::aligner::WFAligner;
 use std::cmp::Ordering;
 
 /// Represents a de novo allele event with associated scoring and classification information.
@@ -80,23 +81,39 @@ static COMBS_2D: [[(usize, usize); 2]; 8] = [
 /// # Returns
 ///
 /// An iterator over `DenovoAllele` instances with updated de novo information.
-pub fn assess_denovo<'a>(
+pub fn assess_denovo<'a, S: ScoreRecorder>(
     mother_gts: &'a AlleleSet,
     father_gts: &'a AlleleSet,
     child_gts: &'a AlleleSet,
     params: &Params,
     aligner: &mut WFAligner,
+    scores: &mut S,
 ) -> impl Iterator<Item = DenovoAllele> + 'a {
     let mut matrix = Array2::from_elem((4, 2), f64::MIN);
     let mut dnrs = Vec::with_capacity(child_gts.len());
 
     for (index, denovo_allele) in child_gts.iter().enumerate() {
-        let mother_align_scores =
-            align_alleleset(mother_gts, &denovo_allele.seq, params.clip_len, aligner);
-        let father_align_scores =
-            align_alleleset(father_gts, &denovo_allele.seq, params.clip_len, aligner);
-        let child_align_scores =
-            align_allele(denovo_allele, &denovo_allele.seq, params.clip_len, aligner);
+        let mother_align_scores = align_alleleset(
+            mother_gts,
+            &denovo_allele.seq,
+            params.clip_len,
+            aligner,
+            |source, read, score| scores.record("mother", denovo_allele, source, read, score),
+        );
+        let father_align_scores = align_alleleset(
+            father_gts,
+            &denovo_allele.seq,
+            params.clip_len,
+            aligner,
+            |source, read, score| scores.record("father", denovo_allele, source, read, score),
+        );
+        let child_align_scores = align_allele(
+            denovo_allele,
+            &denovo_allele.seq,
+            params.clip_len,
+            aligner,
+            |source, read, score| scores.record("child", denovo_allele, source, read, score),
+        );
 
         let child_read_scores: Vec<(String, i32)> = child_align_scores
             .iter()

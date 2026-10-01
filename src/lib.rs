@@ -1,4 +1,4 @@
-pub mod aligner;
+pub mod alignment_scores;
 pub mod allele;
 pub mod cli;
 pub mod commands;
@@ -14,4 +14,3 @@ pub mod region;
 pub mod snp;
 pub mod trio;
 pub mod util;
-pub mod wfa2;

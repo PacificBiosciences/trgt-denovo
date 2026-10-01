@@ -5,10 +5,10 @@
 //!
 use super::denovo;
 use crate::{
-    aligner::WFAligner,
+    alignment_scores::ScoreRecorder,
     allele::{
-        join_allele_attribute, load_alleles, serialize_as_display, serialize_with_precision,
-        Allele, AlleleSet,
+        Allele, AlleleSet, join_allele_attribute, load_alleles, serialize_as_display,
+        serialize_with_precision,
     },
     handles::TrioLocalData,
     locus::Locus,
@@ -17,6 +17,7 @@ use crate::{
     util::Result,
 };
 use itertools::Itertools;
+use rust_wfa2::aligner::WFAligner;
 use serde::Serialize;
 use std::{cmp::max, collections::HashSet};
 
@@ -182,11 +183,12 @@ fn check_field_similarity(
     relative_difference <= tolerance
 }
 
-pub fn process_alleles(
+pub fn process_alleles<S: ScoreRecorder>(
     locus: &Locus,
     handle: &mut TrioLocalData,
     params: &Params,
     aligner: &mut WFAligner,
+    scores: &mut S,
 ) -> Result<Vec<AlleleResult>> {
     let mut template_result = AlleleResult {
         chrom: locus.region.contig.to_string(),
@@ -267,21 +269,22 @@ pub fn process_alleles(
         template_result.child_AL = join_allele_attribute(alleles, |a| &a.allele_length);
     }
 
-    let error_labels: Vec<&str> = [
-        ("F", &father_alleles),
-        ("M", &mother_alleles),
-        ("C", &child_alleles),
-    ]
-    .iter()
-    .filter_map(|&(label, res)| if res.is_err() { Some(label) } else { None })
-    .collect();
+    let mut loading_failed = false;
+    for (sample, result) in [
+        ("father", &father_alleles),
+        ("mother", &mother_alleles),
+        ("child", &child_alleles),
+    ] {
+        if let Err(error) = result {
+            log::warn!(
+                "Skipping TRID={} because allele loading failed for {sample}: {error:#}",
+                locus.id
+            );
+            loading_failed = true;
+        }
+    }
 
-    if !error_labels.is_empty() {
-        log::warn!(
-            "Skipping TRID={} missing genotyping in: {}",
-            locus.id,
-            error_labels.join(",")
-        );
+    if loading_failed {
         return Ok(vec![template_result]);
     }
 
@@ -308,6 +311,7 @@ pub fn process_alleles(
         &child_alleles,
         params,
         aligner,
+        scores,
     ) {
         let mut result = template_result.clone();
         result.genotype = dna.genotype;

@@ -111,13 +111,13 @@ dependencies = [
  "bitflags",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "shlex",
  "syn",
 ]
@@ -724,15 +724,6 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
@@ -1135,6 +1126,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-wfa2"
+version = "0.1.0"
+source = "git+https://github.com/tmokveld/rust-wfa2.git?rev=4eee33b33e8e7c91d51acdc2f70005bef49ac05c#4eee33b33e8e7c91d51acdc2f70005bef49ac05c"
+dependencies = [
+ "wfa2-sys",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1142,9 +1141,9 @@ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.1"
+version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustc_version"
@@ -1392,7 +1391,7 @@ dependencies = [
 
 [[package]]
 name = "trgt-denovo"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1406,10 +1405,10 @@ dependencies = [
  "owo-colors",
  "rayon",
  "rust-htslib",
+ "rust-wfa2",
  "serde",
  "tempfile",
  "vergen-gitcl",
- "wfa2-sys",
 ]
 
 [[package]]
@@ -1543,7 +1542,7 @@ dependencies = [
 [[package]]
 name = "wfa2-sys"
 version = "0.1.0"
-source = "git+https://github.com/ctsa/rust-wfa2.git?rev=4342b3b06278656fa51c0a33b4eb0b67d53bfa8c#4342b3b06278656fa51c0a33b4eb0b67d53bfa8c"
+source = "git+https://github.com/tmokveld/rust-wfa2.git?rev=4eee33b33e8e7c91d51acdc2f70005bef49ac05c#4eee33b33e8e7c91d51acdc2f70005bef49ac05c"
 dependencies = [
  "bindgen 0.72.1",
  "cmake",

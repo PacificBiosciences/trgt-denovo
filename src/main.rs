@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use clap::Parser;
 use trgt_denovo::{
-    cli::{init_verbose, Cli, Command, FULL_VERSION},
+    cli::{Cli, Command, FULL_VERSION, init_verbose},
     commands::{duo, trio},
     util::Result,
 };

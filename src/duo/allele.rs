@@ -5,10 +5,10 @@
 //!
 use super::denovo;
 use crate::{
-    aligner::WFAligner,
+    alignment_scores::ScoreRecorder,
     allele::{
-        join_allele_attribute, load_alleles, serialize_as_display, serialize_with_precision,
-        Allele, AlleleSet,
+        Allele, AlleleSet, join_allele_attribute, load_alleles, serialize_as_display,
+        serialize_with_precision,
     },
     handles::DuoLocalData,
     locus::Locus,
@@ -16,6 +16,7 @@ use crate::{
     model::{DenovoStatus, Params, QuickMode},
     util::Result,
 };
+use rust_wfa2::aligner::WFAligner;
 use serde::Serialize;
 use std::{cmp::Ordering, collections::HashSet};
 
@@ -121,11 +122,12 @@ pub struct AlleleResult {
     pub read_ids: Option<Vec<String>>,
 }
 
-pub fn process_alleles(
+pub fn process_alleles<S: ScoreRecorder>(
     locus: &Locus,
     handle: &mut DuoLocalData,
     params: &Params,
     aligner: &mut WFAligner,
+    scores: &mut S,
 ) -> Result<Vec<AlleleResult>> {
     let mut template_result = AlleleResult {
         chrom: locus.region.contig.to_string(),
@@ -182,17 +184,18 @@ pub fn process_alleles(
         template_result.b_AL = join_allele_attribute(alleles, |a| &a.allele_length);
     }
 
-    let error_labels: Vec<&str> = [("A", &a_alleles), ("B", &b_alleles)]
-        .iter()
-        .filter_map(|&(label, res)| if res.is_err() { Some(label) } else { None })
-        .collect();
+    let mut loading_failed = false;
+    for (sample, result) in [("sample A", &a_alleles), ("sample B", &b_alleles)] {
+        if let Err(error) = result {
+            log::warn!(
+                "Skipping TRID={} because allele loading failed for {sample}: {error:#}",
+                locus.id
+            );
+            loading_failed = true;
+        }
+    }
 
-    if !error_labels.is_empty() {
-        log::warn!(
-            "Skipping TRID={} missing genotyping in: {}",
-            locus.id,
-            error_labels.join(",")
-        );
+    if loading_failed {
         return Ok(vec![template_result]);
     }
 
@@ -213,7 +216,7 @@ pub fn process_alleles(
     }
 
     let mut out_vec = Vec::new();
-    for dna in denovo::assess_denovo(&a_alleles, &b_alleles, params, aligner) {
+    for dna in denovo::assess_denovo(&a_alleles, &b_alleles, params, aligner, scores) {
         let mut result = template_result.clone();
         result.genotype = dna.genotype;
         result.denovo_coverage = dna.denovo_coverage;

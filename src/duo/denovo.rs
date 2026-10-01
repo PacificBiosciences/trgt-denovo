@@ -1,10 +1,11 @@
-use crate::aligner::WFAligner;
+use crate::alignment_scores::ScoreRecorder;
 use crate::allele::AlleleSet;
 use crate::denovo::{
     align_allele, align_alleleset, get_overlap_coverage, get_score_count_diff, get_top_other_score,
 };
 use crate::math;
 use crate::model::{DenovoStatus, DenovoType, Params};
+use rust_wfa2::aligner::WFAligner;
 
 /// Represents a de novo allele event with associated scoring and classification information.
 #[derive(Debug)]
@@ -43,19 +44,31 @@ pub struct DenovoAllele {
 /// # Returns
 ///
 /// An iterator over `DenovoAllele` instances with updated de novo information.
-pub fn assess_denovo<'a>(
+pub fn assess_denovo<'a, S: ScoreRecorder>(
     a_gts: &'a AlleleSet,
     b_gts: &'a AlleleSet,
     params: &Params,
     aligner: &mut WFAligner,
+    scores: &mut S,
 ) -> impl Iterator<Item = DenovoAllele> + 'a {
     let mut dnrs = Vec::with_capacity(a_gts.len());
 
     for denovo_allele in a_gts.iter() {
-        let b_align_scores = align_alleleset(b_gts, &denovo_allele.seq, params.clip_len, aligner);
+        let b_align_scores = align_alleleset(
+            b_gts,
+            &denovo_allele.seq,
+            params.clip_len,
+            aligner,
+            |source, read, score| scores.record("b", denovo_allele, source, read, score),
+        );
 
-        let a_align_scores =
-            align_allele(denovo_allele, &denovo_allele.seq, params.clip_len, aligner);
+        let a_align_scores = align_allele(
+            denovo_allele,
+            &denovo_allele.seq,
+            params.clip_len,
+            aligner,
+            |source, read, score| scores.record("a", denovo_allele, source, read, score),
+        );
 
         let child_read_scores: Vec<(String, i32)> = a_align_scores
             .iter()

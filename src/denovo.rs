@@ -1,8 +1,9 @@
 use crate::{
-    aligner::{AlignmentStatus, WFAligner},
     allele::{Allele, AlleleSet},
     math,
+    read::TrgtRead,
 };
+use rust_wfa2::aligner::{AlignmentStatus, WFAligner};
 
 /// Aligns reads from alleles to a target sequence and calculates alignment scores.
 ///
@@ -15,6 +16,7 @@ use crate::{
 /// * `target` - A slice of the target sequence to align to.
 /// * `clip_len` - The length of the clipping to be applied to alignments.
 /// * `aligner` - A mutable reference to the `WFAligner` for performing alignments.
+/// * `on_score` - Receives each successful alignment's source allele, read, and exact score.
 ///
 /// # Returns
 ///
@@ -24,14 +26,17 @@ pub fn align_alleleset(
     target: &[u8],
     clip_len: usize,
     aligner: &mut WFAligner,
+    mut on_score: impl FnMut(&Allele, &TrgtRead, i32),
 ) -> Vec<Vec<i32>> {
     let mut align_scores = vec![vec![]; gts.len()];
     for (i, allele) in gts.iter().enumerate() {
         for (read, _align) in &allele.read_aligns {
             if let AlignmentStatus::StatusAlgCompleted =
-                aligner.align_end_to_end(&read.bases, target)
+                aligner.align_end_to_end(&read.bases, target).status
             {
-                align_scores[i].push(aligner.cigar_score_clipped(clip_len));
+                let score = aligner.cigar_score_clipped(clip_len);
+                align_scores[i].push(score);
+                on_score(allele, read, score);
             }
         }
     }
@@ -43,11 +48,16 @@ pub fn align_allele(
     target: &[u8],
     clip_len: usize,
     aligner: &mut WFAligner,
+    mut on_score: impl FnMut(&Allele, &TrgtRead, i32),
 ) -> Vec<i32> {
     let mut align_scores = vec![];
     for (read, _align) in &allele.read_aligns {
-        if let AlignmentStatus::StatusAlgCompleted = aligner.align_end_to_end(&read.bases, target) {
-            align_scores.push(aligner.cigar_score_clipped(clip_len));
+        if let AlignmentStatus::StatusAlgCompleted =
+            aligner.align_end_to_end(&read.bases, target).status
+        {
+            let score = aligner.cigar_score_clipped(clip_len);
+            align_scores.push(score);
+            on_score(allele, read, score);
         }
     }
     align_scores
@@ -126,4 +136,115 @@ pub fn get_score_count_diff(top_score: f64, aligns: &[i32]) -> (usize, f32) {
         0.0
     };
     (count, mean_diff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{commands::shared::create_aligner_with_scoring, read::TrgtReadBuilder};
+
+    #[test]
+    fn test_upstream_aligner_preserves_clipped_read_scores() {
+        let left = b"AAGGAGCTGAGAATTGTTCTTCCAGATACCTTTCCGACCTCTTCTTGGTT";
+        let right = b"GGAGTGCAGTGGTGCAATCTTGGCTCACTACAACCTCCGCATCCTGGGTT";
+        let read_left = b"AAGGAGCTGAGAATTGTTCGTCCAGATACCTTTCCGACCTCTTCTTGGTT";
+        let read_right = b"GGAGTGCAGTGGTGCAATCTTGGCTCACTACAACCTCTGCATCCTGGGTT";
+        let target = [left.as_slice(), &b"ATTT".repeat(10), right].concat();
+        let read = [read_left.as_slice(), &b"ATTT".repeat(8), read_right].concat();
+        let allele = Allele::dummy(vec![
+            TrgtReadBuilder::default().with_bases(read).build(),
+            TrgtReadBuilder::default()
+                .with_bases(target.clone())
+                .build(),
+        ]);
+        let mut aligner = create_aligner_with_scoring(crate::model::AlnScoring::default()).unwrap();
+
+        // Clipping removes the two flank mismatches, but retains the 8-base gap.
+        assert_eq!(
+            align_allele(&allele, &target, 0, &mut aligner, |_, _, _| {}),
+            [-36, 0]
+        );
+        assert_eq!(
+            align_allele(&allele, &target, 50, &mut aligner, |_, _, _| {}),
+            [-20, 0]
+        );
+        let alleles = AlleleSet {
+            alleles: vec![allele, Allele::dummy(vec![])],
+            hp_counts: [0; 3],
+        };
+        assert_eq!(
+            align_alleleset(&alleles, &target, 50, &mut aligner, |_, _, _| {}),
+            [vec![-20, 0], vec![]]
+        );
+    }
+
+    #[test]
+    fn test_failed_alignments_do_not_contribute_scores() {
+        use rust_wfa2::aligner::{AlignmentScope, Heuristics, MemoryModel};
+
+        let target = b"GGGGACGTCCCC";
+        let allele = Allele::dummy(
+            [target.as_slice(), b"GGGGATGTCCCC", target]
+                .into_iter()
+                .map(|bases| TrgtReadBuilder::default().with_bases(bases).build())
+                .collect(),
+        );
+        let mut aligner = WFAligner::builder(AlignmentScope::Alignment, MemoryModel::MemoryLow)
+            .affine2p(8, 4, 2, 24, 1)
+            .with_heuristics(Heuristics::wfa2_default())
+            .with_max_alignment_steps(1)
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            align_allele(&allele, target, 4, &mut aligner, |_, _, _| {}),
+            [0, 0]
+        );
+        let alleles = AlleleSet {
+            alleles: vec![allele],
+            hp_counts: [0; 3],
+        };
+        assert_eq!(
+            align_alleleset(&alleles, target, 4, &mut aligner, |_, _, _| {}),
+            [vec![0, 0]]
+        );
+    }
+
+    #[test]
+    fn test_alignment_scores_preserve_read_identity_after_failed_alignment() {
+        use rust_wfa2::aligner::{AlignmentScope, Heuristics, MemoryModel};
+
+        let target = b"GGGGACGTCCCC";
+        let allele = Allele::dummy(
+            [
+                ("first", target.as_slice()),
+                ("failed", b"GGGGATGTCCCC"),
+                ("last", target),
+            ]
+            .into_iter()
+            .map(|(name, bases)| {
+                let mut read = TrgtReadBuilder::default().with_bases(bases).build();
+                read.name = name.to_owned();
+                read
+            })
+            .collect(),
+        );
+        let mut aligner = WFAligner::builder(AlignmentScope::Alignment, MemoryModel::MemoryLow)
+            .affine2p(8, 4, 2, 24, 1)
+            .with_heuristics(Heuristics::wfa2_default())
+            .with_max_alignment_steps(1)
+            .build()
+            .unwrap();
+        let mut records = Vec::new();
+        let scores = align_allele(&allele, target, 4, &mut aligner, |source, read, score| {
+            records.push((source.index, read.name.clone(), score));
+        });
+        assert_eq!(
+            (scores, records),
+            (
+                vec![0, 0],
+                vec![(0, "first".to_owned(), 0), (0, "last".to_owned(), 0)],
+            ),
+        );
+    }
 }

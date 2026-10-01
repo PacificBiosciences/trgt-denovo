@@ -13,7 +13,7 @@ A brief overview of the steps needed to call *de novo* tandem repeat mutations u
 
 ## Calling *de novo* tandem repeat mutations
 
-Given the following data: 
+Given the following data:
 
 - Reference genome `reference.fasta`
 - Repeat definition file `repeat.bed`.
@@ -23,7 +23,7 @@ Given the following data:
 
 All data must first be genotyped by TRGT:
 
-```
+```bash
 ./trgt --genome reference.fasta \
        --repeats repeat.bed \
        --reads sample_F.bam \
@@ -31,7 +31,7 @@ All data must first be genotyped by TRGT:
        --karyotype XY
 ```
 
-```
+```bash
 ./trgt --genome reference.fasta \
        --repeats repeat.bed \
        --reads sample_M.bam \
@@ -39,7 +39,7 @@ All data must first be genotyped by TRGT:
        --karyotype XX
 ```
 
-```
+```bash
 ./trgt --genome reference.fasta \
        --repeats repeat.bed \
        --reads sample_S.bam \
@@ -50,13 +50,15 @@ All data must first be genotyped by TRGT:
 TRGT outputs the genotyped repeat sites in a VCF file stored in `prefix.vcf.gz` and the spanning reads that were used to genotype each site (that fully span the repeat sequences) stored in `prefix.spanning.bam`. TRGT-denovo requires sorted BAM and VCF data, hence you will need to sort and index the output VCF and BAM files. For each family member this involves:
 
 #### VCF sorting
-```
+
+```bash
 bcftools sort -Ob -o sample_F.sorted.vcf.gz sample_F.vcf.gz
 bcftools index sample_F.sorted.vcf.gz
 ```
 
 #### BAM sorting
-```
+
+```bash
 samtools sort -o sample_F.spanning.sorted.bam sample_F.spanning.bam
 samtools index sample_F.spanning.sorted.bam
 ```
@@ -67,7 +69,7 @@ Such that you end up with `sample_F.sorted.vcf.gz`, `sample_F.spanning.sorted.ba
 
 With all preprocessing completed, we can call *de novo* repeat expansion mutations using TRGT-denovo from the sample data. Note that family members are supplied by their common prefix of `spanning.sorted.bam` and `sorted.vcf.gz`, i.e., `sample_F`, `sample_M`, and `sample_S` and path if not running TRGT-denovo in the same directory as the data:
 
-```
+```bash
 ./TRGT-denovo trio --reference reference.fasta \
               --bed repeat.bed \
               --father sample_F \
@@ -76,4 +78,4 @@ With all preprocessing completed, we can call *de novo* repeat expansion mutatio
               --out out.tsv
 ```
 
-For further interpretation of TRGT-denovo output see [here](interpretation.md), additionally scripts/python/trio_analysis.ipynb shows an example of doing basic analysis given TRGT-denovo trio output to select candidate *de novo* calls.
+For further interpretation of TRGT-denovo output see the [intepretation documentation](interpretation.md), additionally scripts/python/trio_analysis.ipynb shows an example of doing basic analysis given TRGT-denovo trio output to select candidate *de novo* calls.
